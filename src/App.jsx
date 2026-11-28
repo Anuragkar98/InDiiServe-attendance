@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   CheckCircle2,
   XCircle,
@@ -27,8 +27,32 @@ import {
   ArrowLeft,
   Undo2,
   Loader2,
+  CalendarDays,
+  Award,
+  TableProperties,
+  X,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
+
+const SESSION_STORAGE_KEY = "indiiserve_auth_session_v1";
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const TODAY_ISO = "2026-11-28";
+
+// Monthly earned rates per client specification
+const MONTHLY_EARN_RATES = {
+  PL: 1.25, // 1.25 days per month
+  SL: 1.0,  // 1 day per month
+  CL: 0.83, // 0.83 day per month
+};
+
+const HANDBOOK_QUICK_JUMPS = [
+  { label: "Comp Off", keyword: "Comp Off", docId: "leave-attendance" },
+  { label: "Notice Period", keyword: "notice period", docId: "separation-exit" },
+  { label: "Payroll", keyword: "Payroll", docId: "payroll-policy" },
+  { label: "Leave Accrual", keyword: "Accrual", docId: "leave-attendance" },
+  { label: "Holidays", keyword: "Holiday", docId: "leave-attendance" },
+  { label: "POSH / ICC", keyword: "ICC", docId: "posh" },
+];
 
 const INITIAL_ADMINS = [
   {
@@ -66,67 +90,88 @@ const NATIONAL_HOLIDAYS_MMDD = {
 
 const POLICY_LIMITS = {
   PL: {
-    label: "Paid / Privilege Leave (PL)",
-    annual: 15,
-    maxCarryForward: 30,
+    label: "Privilege Leave (PL) — 1.25/mo",
+    monthlyRate: MONTHLY_EARN_RATES.PL,
     approver: "Reporting Manager",
   },
   SL: {
-    label: "Sick Leave (SL)",
-    annual: 12,
-    maxCarryForward: 0,
+    label: "Sick Leave (SL) — 1/mo",
+    monthlyRate: MONTHLY_EARN_RATES.SL,
     approver: "Reporting Manager (+ HR if extended)",
   },
   CL: {
-    label: "Casual Leave (CL)",
-    annual: 10,
-    maxCarryForward: 0,
+    label: "Casual Leave (CL) — 0.83/mo",
+    monthlyRate: MONTHLY_EARN_RATES.CL,
     approver: "Reporting Manager (max 2 consecutive days)",
   },
   CO: {
-    label: "Compensatory Off (CO)",
-    annual: 0,
-    maxCarryForward: 0,
+    label: "Compensatory Off (CO) — Sunday Work",
+    monthlyRate: 0,
     approver: "Reporting Manager (valid 60 days)",
   },
   LWP: {
     label: "Leave Without Pay (LWP)",
-    annual: 999,
-    maxCarryForward: 0,
+    monthlyRate: 0,
     approver: "HR + Management",
   },
 };
 
-function InDiiServeLogo({ compact = false }) {
+function InDiiServeLogo({
+  compact = false,
+  variant = "header",
+  onClick = null,
+}) {
   const [imgMissing, setImgMissing] = useState(false);
 
-  if (!imgMissing) {
+  const content =
+    variant === "login" ? (
+      <span className="inline-flex items-center text-2xl font-extrabold tracking-tight text-slate-900 select-none">
+        InDiiServe
+      </span>
+    ) : !imgMissing ? (
+      <img
+        src="/indiiserve-logo.jpeg"
+        alt="InDiiServe"
+        onError={() => setImgMissing(true)}
+        className={`w-auto object-contain select-none ${
+          compact ? "h-10" : "h-11"
+        }`}
+      />
+    ) : (
+      <span className="inline-flex items-center text-lg font-extrabold tracking-tight text-slate-900 select-none">
+        InDiiServe
+      </span>
+    );
+
+  if (onClick) {
     return (
-      <div className="inline-flex items-center rounded-lg bg-white px-2.5 py-1.5 shadow-2xs select-none">
-        <img
-          src="/indiiserve-logo.jpeg"
-          alt="InDiiServe.ai"
-          onError={() => setImgMissing(true)}
-          className={`w-auto object-contain ${compact ? "h-13" : "h-19"}`}
-        />
-      </div>
+      <button
+        type="button"
+        onClick={onClick}
+        title="Go to Home"
+        className="inline-flex items-center rounded-lg p-1 text-left transition hover:opacity-85 focus:outline-none cursor-pointer"
+      >
+        {content}
+      </button>
     );
   }
 
-  return (
-    <span className="inline-flex items-center gap-2 font-bold text-slate-900">
-      InDiiServe.ai
-    </span>
-  );
+  return <div className="inline-flex items-center">{content}</div>;
 }
 
 const HR_HANDBOOK_DOCS = [
   {
     id: "posh",
     title: "Prevention of Sexual Harassment (POSH)",
-    accentClass: "border-rose-600 bg-rose-600 text-white",
-    idleClass:
-      "border-slate-200 bg-white text-slate-800 hover:border-rose-400 hover:bg-rose-50/50",
+    badge: "Act 2013 Compliance",
+    cardBg:
+      "from-rose-500 to-pink-600 text-white border-rose-600 shadow-md shadow-rose-500/20",
+    idleCard:
+      "from-rose-50/90 to-white text-rose-950 border-rose-200/90 hover:border-rose-400 hover:shadow-sm",
+    headerBand:
+      "bg-gradient-to-r from-rose-600 via-pink-600 to-rose-500 text-white",
+    sectionAccent: "border-l-4 border-rose-500 bg-rose-50/40",
+    dotColor: "bg-rose-500",
     sections: [
       {
         heading: "1. Policy Statement",
@@ -246,15 +291,21 @@ const HR_HANDBOOK_DOCS = [
   },
   {
     id: "leave-attendance",
-    title: "_Leave & Attendance Policy_Indiiserve",
-    accentClass: "border-indigo-600 bg-indigo-600 text-white",
-    idleClass:
-      "border-slate-200 bg-white text-slate-800 hover:border-indigo-400 hover:bg-indigo-50/50",
+    title: "Leave & Attendance Policy — Indiiserve",
+    badge: "Monthly Accrual & Comp Off",
+    cardBg:
+      "from-indigo-600 to-violet-600 text-white border-indigo-700 shadow-md shadow-indigo-500/20",
+    idleCard:
+      "from-indigo-50/90 to-white text-indigo-950 border-indigo-200/90 hover:border-indigo-400 hover:shadow-sm",
+    headerBand:
+      "bg-gradient-to-r from-indigo-600 via-blue-600 to-violet-600 text-white",
+    sectionAccent: "border-l-4 border-indigo-500 bg-indigo-50/40",
+    dotColor: "bg-indigo-500",
     sections: [
       {
         heading: "1. Purpose",
         paragraphs: [
-          "The purpose of this policy is to provide a structured framework for employee leave entitlements while ensuring business continuity and employee well-being. It aims to promote employee well-being, work-life balance, and fairness by clearly defining leave entitlements, processes, and guidelines. This policy outlines the various types of leave available to employees, including paid leave, sick leave, statutory leaves, and special leaves, along with their eligibility, approval process, and usage guidelines. It ensures transparency, consistency, and compliance with applicable labor laws, while supporting employees in managing personal, health, and family responsibilities.",
+          "The purpose of this policy is to provide a structured framework for employee leave entitlements while ensuring business continuity and employee well-being.",
         ],
       },
       {
@@ -264,356 +315,107 @@ const HR_HANDBOOK_DOCS = [
         ],
       },
       {
-        heading: "3. Types of Leave — 3.1 Paid Leave (Privilege Leave / Earned Leave)",
+        heading: "3. Monthly Earned Leave Accrual & Types of Leave",
         paragraphs: [
-          "Entitlement: 15 days per year (1.25 days per month)",
-          "Guidelines:",
+          "After joining, full-month leave accrual starts from the 1st of the following month (or the joining month itself if joining on the 1st). Each completed month adds 1.25 Privilege Leave (PL), 1 Sick Leave (SL), and 0.83 Casual Leave (CL). Approved leave days are deducted from earned balances.",
         ],
         bullets: [
-          "Paid Leave must be planned and applied in advance through the prescribed leave management system or via email, and is subject to approval by the reporting manager.",
-          "Employees are encouraged to plan leave in consultation with their team to ensure smooth workflow and business continuity.",
-          "Paid Leave may be taken in full-day or half-day increments, as per company policy.",
-          "A minimum notice period of 3–7 days is recommended for planned leave exceeding 2 consecutive days.",
-          "Employees may carry forward unused Paid Leave to the next calendar year, subject to a maximum accumulation limit of 30.",
-          "Encashment of unused Paid Leave may be permitted at the time of separation or as per company policy.",
-          "Paid Leave can be clubbed with other leave types (such as sick leave), subject to managerial approval and business requirements.",
-          "Paid Leave during critical business periods (e.g., audits, peak season, project deadlines) may be restricted or deferred based on management discretion.",
-          "In case of emergency situations, employees must inform their reporting manager at the earliest, and regularize the leave subsequently.",
-          "Any unauthorized absence or leave taken without approval may be treated as Leave Without Pay (LWP) or may attract disciplinary action.",
+          "3.1 Privilege Leave (PL): Earned at 1.25 days per completed month. Planned in advance with reporting manager approval; full-day or half-day.",
+          "3.2 Sick Leave (SL): Earned at 1 day per completed month for illness/medical recovery. Medical note may be required beyond 2 consecutive days.",
+          "3.3 Casual Leave (CL): Earned at 0.83 day per completed month for urgent personal needs, generally up to 2 consecutive days at a time.",
+          "3.9 Compensatory Off (CO): Sundays are Weekly Offs. Working on a Sunday (Present or Half-Day) earns 1 Comp Off leave.",
         ],
       },
       {
-        heading: "3.2 Sick Leave",
-        paragraphs: ["Entitlement: 12 days per year", "Guidelines:"],
+        heading: "3.4 Menstrual, Maternity & Paternity Leave",
         bullets: [
-          "Sick Leave may be availed by employees in case of personal illness, injury, or medical conditions that prevent them from performing their duties.",
-          "Employees are required to inform their reporting manager at the earliest, preferably before the start of the workday, in case of sudden illness.",
-          "For planned medical procedures or known health conditions, employees are expected to apply for leave in advance wherever possible.",
-          "A medical certificate or doctor’s note may be required for sick leave exceeding 2 consecutive days, or as deemed necessary by the Company.",
-          "Sick Leave may be taken as a full day or half day, subject to approval and company policy.",
-          "Sick Leave is intended strictly for health-related reasons and should not be used for personal work or leisure purposes.",
-          "Sick Leave generally cannot be carried forward or encashed, unless otherwise specified by the Company.",
-          "Employees may be required to remain available for communication in case of extended absence, for work handover or critical updates, where feasible.",
-          "Misuse or false declaration of Sick Leave may lead to disciplinary action.",
-          "In cases of prolonged illness, employees may be required to provide additional medical documentation and may be eligible for extended leave or Leave Without Pay (LWP) as per company policy.",
-        ],
-      },
-      {
-        heading: "3.3 Casual Leave (Optional but Recommended)",
-        paragraphs: ["Entitlement: 10 days per year", "Guidelines:"],
-        bullets: [
-          "Casual Leave is intended for short-term, unforeseen, or urgent personal needs, such as personal work, emergencies, or family matters.",
-          "Employees are encouraged to apply for Casual Leave in advance wherever possible; however, in case of urgency, same-day intimation to the reporting manager is acceptable.",
-          "Casual Leave may be availed as a full day or half day, subject to approval and business requirements.",
-          "Typically, Casual Leave should not be taken for extended durations and may be restricted to 2 consecutive days at a time, unless approved otherwise.",
-          "Casual Leave generally cannot be carried forward to the next calendar year and will lapse if not utilized within the defined period.",
-          "Casual Leave cannot be encashed.",
-          "Casual Leave may be restricted during critical business periods or peak workload times, based on management discretion.",
-          "Employees must ensure proper work handover or task delegation before proceeding on leave.",
-          "Casual Leave may be clubbed with other leave types only with prior approval and subject to company policy.",
-          "Any misuse or frequent unplanned absence may be reviewed and may lead to disciplinary action if found inappropriate.",
-        ],
-      },
-      {
-        heading: "3.4 Menstrual Leave & 3.5 Maternity Leave",
-        paragraphs: [
-          "3.4 Menstrual Leave",
-          "3.5 Maternity Leave — Entitlement: Up to 26 weeks (as per Indian law) for first two children; 12 weeks for subsequent children. Guidelines:",
-        ],
-        bullets: [
-          "Maternity Leave may be availed by eligible female employees in accordance with applicable laws and company policy.",
-          "Employees are required to inform their reporting manager and HR in advance, preferably at least 8 weeks prior to the expected date of delivery, along with relevant medical documentation.",
-          "Maternity Leave may be availed before and after childbirth, as per medical advice and within the total entitlement defined by the Company.",
-          "A medical certificate from a registered medical practitioner confirming the expected date of delivery must be submitted at the time of applying for leave.",
-          "Employees may also avail maternity leave in cases of adoption or surrogacy, subject to eligibility criteria and statutory provisions.",
-          "During maternity leave, employees will continue to receive salary and benefits as per applicable law and company policy.",
-          "Employees are expected to ensure proper work handover and transition planning before proceeding on leave.",
-          "The Company may provide flexible working arrangements, including work-from-home or reduced hours, post return to work, subject to role feasibility and business requirements.",
-          "In case of medical complications or extended recovery, additional leave may be granted based on medical advice and management approval, which may be adjusted against other leave balances or treated as Leave Without Pay.",
-          "The Company ensures that no employee shall face discrimination or disadvantage due to maternity leave, in line with applicable laws.",
-          "Employees are required to confirm their return-to-work date in advance and coordinate with HR for smooth reintegration.",
-        ],
-      },
-      {
-        heading: "3.5 Paternity Leave",
-        paragraphs: ["Entitlement: 5–10 working days", "Guidelines:"],
-        bullets: [
-          "Paternity Leave may be availed by eligible male employees upon the birth or legal adoption of a child, as per company policy.",
-          "Employees are required to inform their reporting manager and HR in advance, preferably at least 2–4 weeks prior to the expected date of childbirth or adoption.",
-          "Paternity Leave must be availed within the defined time window (typically within 30–60 days of childbirth/adoption), failing which the entitlement may lapse.",
-          "The leave may be taken in one continuous block or in parts, subject to managerial approval and business requirements.",
-          "Employees may be required to submit supporting documentation, such as a birth certificate, hospital record, or adoption papers.",
-          "Paternity Leave is intended to support employees in family care responsibilities and should be used for the intended purpose.",
-          "Employees are expected to ensure proper work handover and task transition before proceeding on leave.",
-          "Any extension beyond the entitled leave period may be considered based on available leave balance or treated as Leave Without Pay (LWP).",
-          "The Company may offer flexible working arrangements, such as work-from-home or flexible hours, upon return, subject to role feasibility.",
-          "Misuse of Paternity Leave or submission of false information may lead to disciplinary action.",
+          "Menstrual & Maternity Leave: Maternity leave up to statutory norms (up to 26 weeks for first two children) with advance notice and medical documentation.",
+          "Paternity Leave: 5–10 working days for eligible employees upon birth or legal adoption of a child, subject to managerial and HR coordination.",
         ],
       },
       {
         heading: "3.6 National Holidays & 3.7 Festival Holidays",
         bullets: [
-          "3.6 National Holidays: Employees are entitled to mandatory national holidays: Republic Day (26 January), Independence Day (15 August), Gandhi Jayanti (2 October), Labour Day (1 May). These are paid holidays and applicable to all employees.",
-          "3.7 Festival Holidays: Entitlement: festival holidays per year as per company holiday calendar which is published at the beginning of the year.",
+          "National Holidays: Republic Day (26 January), Labour Day (1 May), Independence Day (15 August), and Gandhi Jayanti (2 October) are paid holidays.",
+          "Festival Holidays: Observed as per the annual company holiday calendar.",
         ],
       },
       {
-        heading: "3.8 Leave Without Pay (LWP)",
-        paragraphs: ["Applicability & Guidelines:"],
+        heading: "3.8 Leave Without Pay (LWP) & Approval Rules",
         bullets: [
-          "Leave Without Pay (LWP) may be availed when an employee has exhausted all eligible leave balances or in cases where leave does not fall under any defined category.",
-          "LWP is not an entitlement and is subject to prior approval from the reporting manager and HR, based on business requirements.",
-          "Employees are required to apply for LWP in advance, except in cases of genuine emergencies, where intimation must be provided at the earliest.",
-          "During LWP, the employee will not be entitled to salary or allowances for the period of absence.",
-          "LWP may have an impact on statutory benefits, including PF, ESIC, bonus, gratuity, and leave accrual, as per applicable laws and company policy.",
-          "Extended LWP may affect continuity of service, eligibility for benefits, and performance evaluation, depending on the duration and company guidelines.",
-          "Employees must ensure proper work handover and approvals before proceeding on LWP.",
-          "In cases of prolonged absence, the Company may require supporting documentation and may review continuation of employment on a case-by-case basis.",
-          "Unauthorized absence without approval may be treated as LWP and/or misconduct, and may lead to disciplinary action.",
-          "The Company reserves the right to approve, reject, or limit LWP requests based on operational requirements.",
-        ],
-      },
-      {
-        heading: "3.9 Compensatory Off (CO)",
-        bullets: [
-          "Employees will be eligible for Comp Off if: Work is performed on a weekly off or public holiday with prior approval from the Reporting Manager; Attendance/work is verifiable through system records (login, attendance, task completion, etc.); Work is not part of regular shift or planned roster (especially for BPO/shift roles)",
-          "Guidelines: Prior approval from the Reporting Manager is mandatory; Comp Off must be applied for and approved in the HR system/email; Comp Off cannot be clubbed with more than 2 consecutive leave days (as per company policy); Comp Off cannot be encashed and cannot be carried forward; Employees must ensure proper handover before availing Comp Off",
-          "Validity & Utilization: Comp Off must be utilized within 60 days from the date it is earned; Unused Comp Off beyond the validity period will lapse automatically; Approval of Comp Off leave is subject to business requirements",
-          "Comp Off is not applicable for: Employees on shift/roster where weekly offs are rotated; Work done without prior approval; Partial day work (unless policy allows half-day CO)",
-        ],
-      },
-      {
-        heading: "4. Leave Application Process",
-        bullets: [
-          "Apply leave via HRMS or email to reporting manager",
-          "Obtain reporting manager approval and forward the same to HR team for record keeping",
-          "Inform team for work handover",
-          "Emergency leave must be informed within the same day",
-        ],
-      },
-      {
-        heading: "5. Leave Approval Matrix",
-        bullets: [
-          "Planned Leave, Casual Leave | Reporting Manager",
-          "Sick Leave (extended) | Reporting Manager + HR",
-          "Maternity / Paternity Leave | HR + Management",
-          "LWP | HR + Management",
-        ],
-      },
-      {
-        heading: "6. Leave Clubbing Rules",
-        bullets: [
-          "Sick leave can be clubbed with earned leave",
-          "Casual leave cannot be clubbed beyond defined limits",
-          "Maternity leave cannot be combined with other leave types without approval",
-          "Employees are advised not to apply for leave in a manner that creates a sandwich leave situation. Any such leave pattern will result in intervening weekly offs/holidays being counted as leave.",
-          "Relaxation of this rule will be granted only in case of medical emergencies, supported by appropriate medical proof and approved by HR/management.",
-        ],
-      },
-      {
-        heading: "7. Leave During Notice Period",
-        bullets: [
-          "Leave during notice period is discouraged",
-          "Any leave taken may extend the notice period",
-          "Subject to management approval",
-        ],
-      },
-      {
-        heading: "8. Public Holiday Falling During Leave",
-        paragraphs: [
-          "If a public holiday falls during approved leave, it will not be counted as leave",
-        ],
-      },
-      {
-        heading: "9. Misuse of Leave Policy",
-        paragraphs: ["Any misuse or false claim may lead to disciplinary action."],
-      },
-      {
-        heading: "10. Exceptions & Special Cases",
-        bullets: [
-          "Critical business roles may have restricted leave during peak periods",
-          "Management may approve exceptions on a case-to-case basis",
-          "Medical emergencies will be treated with flexibility, submission of medical documents are mandatory to enable such flexibility.",
-        ],
-      },
-      {
-        heading: "11. Policy Review",
-        paragraphs: [
-          "The company reserves the right to modify this policy based on business needs or statutory changes.",
+          "LWP applies when earned balances are exhausted or for unapproved/extended absence, subject to reporting manager and HR approval.",
+          "Proper work handover is required before proceeding on leave, and leave during notice periods may extend the notice period.",
         ],
       },
     ],
   },
   {
     id: "separation-exit",
-    title: "Separation & Exit Policy_Indiiserve",
-    accentClass: "border-amber-600 bg-amber-600 text-white",
-    idleClass:
-      "border-slate-200 bg-white text-slate-800 hover:border-amber-400 hover:bg-amber-50/50",
+    title: "Separation & Exit Policy — Indiiserve",
+    badge: "30-Day Notice & F&F",
+    cardBg:
+      "from-amber-500 to-orange-600 text-white border-amber-600 shadow-md shadow-amber-500/20",
+    idleCard:
+      "from-amber-50/90 to-white text-amber-950 border-amber-200/90 hover:border-amber-400 hover:shadow-sm",
+    headerBand:
+      "bg-gradient-to-r from-amber-600 via-orange-500 to-amber-500 text-white",
+    sectionAccent: "border-l-4 border-amber-500 bg-amber-50/40",
+    dotColor: "bg-amber-500",
     sections: [
       {
-        heading: "1. Purpose",
+        heading: "1. Purpose & 2. Scope",
         paragraphs: [
-          "This policy defines a structured exit process for employees. It ensures smooth transition, compliance, and protection of company interests.",
+          "Defines a structured, compliant exit process across all roles and employment types to protect company interests and ensure smooth knowledge transfer.",
         ],
       },
       {
-        heading: "2. Scope",
-        paragraphs: [
-          "Applicable to all employees across roles and employment types. It covers all forms of separation.",
-        ],
-      },
-      {
-        heading: "3. Types of Separation — 3.1 Resignation",
-        paragraphs: [
-          "Separation can occur in different forms based on circumstances. Each type follows a defined process.",
-          "3.1 Resignation:",
-        ],
+        heading: "3. Types of Separation",
         bullets: [
-          "Employees are required to submit a formal resignation via email or official HR system incase they do not wish to continue due to better opportunities or personal reasons.",
-          "The resignation must be addressed to the Reporting Manager with HR in copy.",
-          "The email should clearly mention:",
-          "Last working day (as per notice period)",
-          "Serving of 30 days notice period is mandatory",
-          "Reason for resignation (optional but recommended)",
+          "Resignation: Formal notice submitted to the Reporting Manager with HR in copy, specifying last working day and serving the mandatory 30-day notice period.",
+          "Termination: Initiated for performance, policy/ZTP violations, absconding (3+ consecutive unexplained working days), or restructuring following fair documentation.",
+          "Retirement, Absconding & Medical/Compassionate Cases: Handled in accordance with company policy and statutory guidelines.",
         ],
       },
       {
-        heading: "3.2 Termination",
-        paragraphs: [
-          "Termination of employment Initiated by the organization due to performance, conduct, or business requirements.",
-        ],
+        heading: "6. Exit Clearance & 7. Full & Final Settlement",
         bullets: [
-          "Performance-Based Termination: Applicable when: Continuous underperformance despite feedback and support; Failure to meet KPIs over a defined period; No improvement during Performance Improvement Plan (PIP)",
-          "Misconduct / Disciplinary Termination: Includes: Violation of company policies; Insubordination; Harassment or inappropriate behavior; Fraud, theft, or ethical misconduct",
-          "Zero Tolerance Policy (ZTP) Violations: Immediate termination may apply in cases of: Data security breaches; Financial fraud or misrepresentation; Severe compliance violations; Abusive behavior on calls (for BPO roles)",
-          "Absconding / Job Abandonment: Applicable when: Employee is absent without notice for [3] consecutive working days; No response to official communication; Formal notices remain unanswered",
-          "Redundancy / Business Restructuring: Applicable when: Role becomes redundant; Organizational restructuring; Cost optimization or business closure",
-          "Probation Termination: Services may be discontinued during probation with shorter notice or immediate effect, as per contract",
-          "Termination Process: The reporting manager or supervisor should keep proper documentation of performance, warnings, or misconduct and ensure to follow principles of fairness and natural justice. Capture issues like (performance/misconduct/absence) and Maintain records: warnings, emails, PIP, call audits, etc. HR should provide employee an opportunity to respond (except in severe ZTP cases). All parties should maintain confidentiality throughout the process. Termination process can be initiated once required approvals are obtained (HR + Management)",
-        ],
-      },
-      {
-        heading: "3.3 Retirement, 3.4 Absconding & 3.5 Death/Medical",
-        bullets: [
-          "3.3 Retirement: Separation upon reaching retirement age of 58, as defined in the employment contract or company policy. Employees will automatically retire upon reaching the defined retirement age unless otherwise extended by the organization.",
-          "3.4 Absconding: An employee will be considered absconding / job abandonment if: Absent from work for 3 consecutive working days without informing the Reporting Manager; No response to calls, emails, or official communication; Failure to report to duty even after formal notices. Employees are expected to inform their manager/HR in case of absence; Any unplanned absence must be communicated within 24 hours; Continuous absence without communication will be treated as misconduct",
-          "3.5 Death/Medical: Handled with sensitivity and compliance. Support is extended to the employee or family.",
-        ],
-      },
-      {
-        heading: "4. Resignation Process",
-        paragraphs: [
-          "Employees must submit their resignation formally. Approval, notice period, and handover must be completed.",
-        ],
-      },
-      {
-        heading: "5. Notice Period",
-        bullets: [
-          "Employees must serve the entire notice period. Shortfall may result in recovery unless waived.",
-          "The standard notice period is 30 days, as per the employment agreement for full time employees.",
-          "Employees are expected to serve the full notice period unless waived by management.",
-          "Any request for early release must be approved by the Reporting Manager and HR.",
-        ],
-      },
-      {
-        heading:
-          "6. Exit Clearance (6.1 Resignation Acceptance, 6.2 Knowledge Transfer, 6.3 Clearance Process)",
-        bullets: [
-          "6.1 Resignation Acceptance: HR will formally acknowledge and accept the resignation. The last working day (LWD) will be confirmed.",
-          "6.2 Knowledge Transfer (KT): Employees must complete proper handover of duties, including: Work status reports; Client communication updates; System/process documentation",
-          "6.3 Clearance Process: Employees must return assets and complete formalities. Clearance ensures smooth exit. Employees must obtain clearance from: IT (assets, email access); HR & Admin (ID cards, office assets); Finance (dues, advances); Reporting Manager (handover completion)",
-        ],
-      },
-      {
-        heading: "7. Full & Final Settlement",
-        paragraphs: [
-          "All dues are settled after clearance. This includes salary and applicable benefits. FnF settlement will be processed within [45-60 days] from the last working day.",
-        ],
-        bullets: [
-          "It includes: Salary up to last working day; Leave encashment (if applicable); Incentives/bonuses (as per policy eligibility)",
-          "Deductions (if any): Notice shortfall; Asset recovery; Loans/advances",
-        ],
-      },
-      {
-        heading: "8. Exit Interview, 9. Exceptions & 10. Policy Review",
-        bullets: [
-          "8. Exit Interview: Feedback is collected to improve processes. It helps enhance employee experience.",
-          "9. Exceptions: Special cases may be considered with approval from the HR head and Business head.",
-          "10. Policy Review: Policy is reviewed periodically. Updates are communicated to all employees.",
+          "Complete Knowledge Transfer (KT) and obtain clearance from IT, HR & Admin, Finance, and the Reporting Manager.",
+          "Full & Final (F&F) settlement accounts for earned dues, applicable leave encashment, and any notice shortfall, asset, or advance recoveries.",
         ],
       },
     ],
   },
   {
     id: "payroll-policy",
-    title: "PAYROLL POLICY",
-    accentClass: "border-emerald-600 bg-emerald-600 text-white",
-    idleClass:
-      "border-slate-200 bg-white text-slate-800 hover:border-emerald-400 hover:bg-emerald-50/50",
+    title: "Payroll Policy — Indiiserve",
+    badge: "Monthly Cycle",
+    cardBg:
+      "from-emerald-600 to-teal-600 text-white border-emerald-700 shadow-md shadow-emerald-500/20",
+    idleCard:
+      "from-emerald-50/90 to-white text-emerald-950 border-emerald-200/90 hover:border-emerald-400 hover:shadow-sm",
+    headerBand:
+      "bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-500 text-white",
+    sectionAccent: "border-l-4 border-emerald-500 bg-emerald-50/40",
+    dotColor: "bg-emerald-500",
     sections: [
       {
-        heading: "1. PURPOSE",
+        heading: "1. Purpose & 2. Scope",
         paragraphs: [
-          "This document establishes the standard procedures and policies governing payroll processing, employee reimbursements, incentives, and business travel expenses to ensure transparency, compliance, and operational efficiency.",
+          "Establishes transparent, compliant monthly payroll governance for permanent, probationary, contractual, and eligible intern staff.",
         ],
       },
       {
-        heading: "2. SCOPE",
-        paragraphs: ["This policy applies to:"],
+        heading: "3. Payroll Cycle & Components",
         bullets: [
-          "Permanent Employees",
-          "Probationary Employees",
-          "Contractual Staff",
-          "Interns (where applicable)",
+          "Monthly Payroll Cycle: Processed every month and credited to employee bank accounts on or before the 10th working day of the month.",
+          "Earnings: Basic Salary, HRA, Special Allowance, Conveyance Allowance, approved incentives/variable pay, arrears, and approved reimbursements.",
+          "Deductions: PF, ESIC, Professional Tax (where applicable), TDS, Leave Without Pay (LWP), and authorized recoveries.",
         ],
       },
       {
-        heading: "3. PAYROLL POLICY — 3.1 Payroll Cycle",
-        bullets: [
-          "Payroll shall be processed monthly.",
-          "Salary will be credited to employees' bank accounts on or before 10th working day of the month.",
-        ],
-      },
-      {
-        heading: "3.2 Payroll Components — Earnings",
+        heading: "Confidentiality & Policy Amendment",
         paragraphs: [
-          "Payroll may include the following components — Earnings:",
-        ],
-        bullets: [
-          "Basic Salary",
-          "House Rent Allowance (HRA)",
-          "Special Allowance",
-          "Conveyance Allowance",
-          "Incentives / Variable Pay",
-          "Arrears (if applicable)",
-          "Approved reimbursements",
-        ],
-      },
-      {
-        heading: "3.2 Payroll Components — Deductions",
-        paragraphs: [
-          "Payroll may include the following components — Deductions:",
-        ],
-        bullets: [
-          "Provident Fund (PF)",
-          "Employee State Insurance (ESI)",
-          "Professional Tax (if applicable)",
-          "Income Tax / TDS",
-          "Leave Without Pay (LWP)",
-          "Other authorized deductions",
-        ],
-      },
-      {
-        heading: "CONFIDENTIALITY",
-        paragraphs: [
-          "Payroll information, salary details, and employee compensation data are strictly confidential and must not be disclosed to unauthorized personnel.",
-        ],
-      },
-      {
-        heading: "POLICY AMENDMENT",
-        paragraphs: [
-          "The Company reserves the right to modify or update this policy at any time based on business requirements or statutory changes.",
+          "Compensation and payroll records are strictly confidential. The Company may update this policy as business or statutory requirements evolve.",
         ],
       },
     ],
@@ -631,10 +433,22 @@ const LAST_NAMES = [
   "Patel", "Verma", "Joshi", "Kulkarni", "Mishra", "Tiwari", "Rao", "Iyer"
 ];
 
+function normalizeIsoDate(raw, fallback = TODAY_ISO) {
+  if (!raw || typeof raw !== "string") return fallback;
+  const trimmed = raw.trim();
+  const isoMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) return isoMatch[1];
+  const parsed = new Date(trimmed);
+  if (isNaN(parsed)) return fallback;
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(
+    parsed.getDate()
+  ).padStart(2, "0")}`;
+}
+
 function expandDateRange(startStr, endStr) {
   const dates = [];
-  const curr = new Date(`${startStr}T00:00:00`);
-  const end = new Date(`${endStr}T00:00:00`);
+  const curr = new Date(`${normalizeIsoDate(startStr, "")}T00:00:00`);
+  const end = new Date(`${normalizeIsoDate(endStr, "")}T00:00:00`);
   if (isNaN(curr) || isNaN(end) || curr > end) return dates;
   while (curr <= end) {
     const y = curr.getFullYear();
@@ -647,12 +461,14 @@ function expandDateRange(startStr, endStr) {
 }
 
 function isSundayDate(dateStr) {
-  const dt = new Date(`${dateStr}T00:00:00`);
+  const dt = new Date(`${normalizeIsoDate(dateStr, "")}T00:00:00`);
   return !isNaN(dt) && dt.getDay() === 0;
 }
 
 function getHolidayName(dateStr) {
-  const mmdd = dateStr.slice(5);
+  const clean = normalizeIsoDate(dateStr, "");
+  if (!clean) return null;
+  const mmdd = clean.slice(5);
   return NATIONAL_HOLIDAYS_MMDD[mmdd] || null;
 }
 
@@ -665,6 +481,107 @@ function countBillableLeaveDays(startDate, endDate, isHalfDay, leaveType) {
     return dow !== 0 && !getHolidayName(dStr);
   });
   return leaveType === "LWP" ? dates.length : billable.length;
+}
+
+/**
+ * Returns the first month index (year * 12 + month) from which full-month accrual counts.
+ * If joining on the 1st of a month, that month counts; otherwise next month's 1st.
+ * Example: joining 2026-11-28 -> first accrual month is Dec 2026 (2026 * 12 + 11).
+ */
+function getFirstAccrualMonthIndex(joiningDateStr) {
+  const iso = normalizeIsoDate(joiningDateStr, TODAY_ISO);
+  const join = new Date(`${iso}T00:00:00`);
+  if (isNaN(join)) return 2026 * 12 + 11;
+  return join.getFullYear() * 12 + join.getMonth() + (join.getDate() === 1 ? 0 : 1);
+}
+
+/**
+ * Counts completed accrual months through `referenceDateStr`.
+ * A month with index `mIdx` is counted only once `referenceDateStr` reaches that month
+ * (and if `referenceDateStr` is in the same month as `mIdx`, it counts once that month starts).
+ * For example, on 2026-11-28, a new employee joined today has startMonthIndex = Dec 2026 (24323),
+ * currentMonthIndex = Nov 2026 (24322) -> returns 0 earned months until December.
+ */
+function getCompletedAccrualMonths(joiningDateStr, referenceDateStr = TODAY_ISO) {
+  const refIso = normalizeIsoDate(referenceDateStr, TODAY_ISO);
+  const ref = new Date(`${refIso}T00:00:00`);
+  if (isNaN(ref)) return 0;
+
+  const startMonthIndex = getFirstAccrualMonthIndex(joiningDateStr);
+  const currentMonthIndex = ref.getFullYear() * 12 + ref.getMonth();
+
+  if (currentMonthIndex < startMonthIndex) return 0;
+  return currentMonthIndex - startMonthIndex + 1;
+}
+
+/**
+ * Builds month-by-month breakdown rows from the first accrual month through `referenceDateStr`.
+ */
+function buildMonthlyAccrualSchedule(joiningDateStr, referenceDateStr = TODAY_ISO) {
+  const refIso = normalizeIsoDate(referenceDateStr, TODAY_ISO);
+  const ref = new Date(`${refIso}T00:00:00`);
+  if (isNaN(ref)) return [];
+
+  const startMonthIndex = getFirstAccrualMonthIndex(joiningDateStr);
+  const endMonthIndex = ref.getFullYear() * 12 + ref.getMonth();
+  if (endMonthIndex < startMonthIndex) return [];
+
+  const rows = [];
+  let count = 0;
+  for (let mIdx = startMonthIndex; mIdx <= endMonthIndex; mIdx++) {
+    count += 1;
+    const year = Math.floor(mIdx / 12);
+    const month0 = mIdx % 12;
+    const label = new Date(year, month0, 1).toLocaleString("en-US", {
+      month: "short",
+      year: "numeric",
+    });
+
+    rows.push({
+      monthNumber: count,
+      label,
+      addedPL: MONTHLY_EARN_RATES.PL,
+      addedSL: MONTHLY_EARN_RATES.SL,
+      addedCL: MONTHLY_EARN_RATES.CL,
+      cumulativePL: Number((count * MONTHLY_EARN_RATES.PL).toFixed(2)),
+      cumulativeSL: Number((count * MONTHLY_EARN_RATES.SL).toFixed(2)),
+      cumulativeCL: Number((count * MONTHLY_EARN_RATES.CL).toFixed(2)),
+    });
+  }
+  return rows;
+}
+
+function computeEarnedLeaveBalances(emp, leaveRequests, referenceDateStr = TODAY_ISO) {
+  const monthsEarned = getCompletedAccrualMonths(emp.joiningDate, referenceDateStr);
+
+  const earnedPL = Number((monthsEarned * MONTHLY_EARN_RATES.PL).toFixed(2));
+  const earnedSL = Number((monthsEarned * MONTHLY_EARN_RATES.SL).toFixed(2));
+  const earnedCL = Number((monthsEarned * MONTHLY_EARN_RATES.CL).toFixed(2));
+
+  let usedPL = 0;
+  let usedSL = 0;
+  let usedCL = 0;
+
+  (leaveRequests || []).forEach((lr) => {
+    if (lr.empId !== emp.id || lr.status !== "APPROVED") return;
+    const days = Number(lr.daysCount) || 0;
+    if (lr.leaveType === "PL") usedPL += days;
+    else if (lr.leaveType === "SL") usedSL += days;
+    else if (lr.leaveType === "CL") usedCL += days;
+  });
+
+  return {
+    monthsEarned,
+    PL: Math.max(0, Number((earnedPL - usedPL).toFixed(2))),
+    SL: Math.max(0, Number((earnedSL - usedSL).toFixed(2))),
+    CL: Math.max(0, Number((earnedCL - usedCL).toFixed(2))),
+    CO: Math.max(0, Number((emp.balances?.CO ?? 0).toFixed(2))),
+    earnedTotals: {
+      PL: earnedPL,
+      SL: earnedSL,
+      CL: earnedCL,
+    },
+  };
 }
 
 function buildSeedData() {
@@ -681,11 +598,12 @@ function buildSeedData() {
       password: "emp123",
       department: idx < 13 ? "Engineering" : "Operations",
       teamLeaderId: idx % 2 === 0 ? "tl-1" : "tl-2",
+      joiningDate: "2026-01-01",
       onNoticePeriod: idx === 7,
       balances: {
-        PL: 15,
-        CL: 10,
-        SL: 12,
+        PL: 13.75,
+        CL: 9.13,
+        SL: 11.0,
         CO: idx % 4 === 0 ? 1 : 0,
       },
     };
@@ -793,37 +711,49 @@ function buildSeedData() {
 }
 
 function mapEmployeeRow(row) {
+  // Prefer explicit joining_date; if absent on a newly created employee, use created_at date rather than 2026-01-01
+  const derivedJoin = row.joining_date
+    ? normalizeIsoDate(row.joining_date, TODAY_ISO)
+    : row.created_at
+    ? normalizeIsoDate(row.created_at, TODAY_ISO)
+    : TODAY_ISO;
+
   return {
     id: row.id,
     empCode: row.emp_code,
     name: row.name,
     password: row.password || "emp123",
     department: row.department,
-    teamLeaderId: row.team_leader_id || "tl-1",
+    teamLeaderId: row.team_leader_id || null,
+    joiningDate: derivedJoin,
     onNoticePeriod: Boolean(row.on_notice_period),
     balances: {
-      PL: Number(row.pl_balance ?? 15),
-      CL: Number(row.cl_balance ?? 10),
-      SL: Number(row.sl_balance ?? 12),
+      PL: Number(row.pl_balance ?? 0),
+      CL: Number(row.cl_balance ?? 0),
+      SL: Number(row.sl_balance ?? 0),
       CO: Number(row.co_balance ?? 0),
     },
   };
 }
 
-function toEmployeeDbRow(emp) {
-  return {
+function toEmployeeDbRow(emp, validTeamLeaderId = null, includeJoiningDate = true) {
+  const base = {
     id: emp.id,
     emp_code: emp.empCode,
     name: emp.name,
     password: emp.password || "emp123",
     department: emp.department,
-    team_leader_id: emp.teamLeaderId || null,
+    team_leader_id: validTeamLeaderId,
     on_notice_period: Boolean(emp.onNoticePeriod),
-    pl_balance: Number(emp.balances?.PL ?? 15),
-    cl_balance: Number(emp.balances?.CL ?? 10),
-    sl_balance: Number(emp.balances?.SL ?? 12),
+    pl_balance: Number(emp.balances?.PL ?? 0),
+    cl_balance: Number(emp.balances?.CL ?? 0),
+    sl_balance: Number(emp.balances?.SL ?? 0),
     co_balance: Number(emp.balances?.CO ?? 0),
   };
+  if (includeJoiningDate && emp.joiningDate) {
+    base.joining_date = normalizeIsoDate(emp.joiningDate, TODAY_ISO);
+  }
+  return base;
 }
 
 function mapLeaveRow(row) {
@@ -831,8 +761,8 @@ function mapLeaveRow(row) {
     id: row.id,
     empId: row.emp_id,
     leaveType: row.leave_type,
-    startDate: row.start_date,
-    endDate: row.end_date,
+    startDate: normalizeIsoDate(row.start_date, TODAY_ISO),
+    endDate: normalizeIsoDate(row.end_date, TODAY_ISO),
     isHalfDay: Boolean(row.is_half_day),
     daysCount: Number(row.days_count),
     reason: row.reason || "",
@@ -860,7 +790,25 @@ function toLeaveDbRow(lr) {
   };
 }
 
+function readPersistedSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.authUser || !parsed?.expiresAt) return null;
+    if (Date.now() > Number(parsed.expiresAt)) {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
+  const persistedSession = useMemo(() => readPersistedSession(), []);
+
   const [data, setData] = useState({
     admins: INITIAL_ADMINS,
     teamLeaders: INITIAL_TEAM_LEADERS,
@@ -871,21 +819,38 @@ export default function App() {
   const [loadingDb, setLoadingDb] = useState(true);
   const [dbError, setDbError] = useState("");
 
-  // Page navigation: "PORTAL" | "HANDBOOK"
-  const [activePage, setActivePage] = useState("PORTAL");
-  const [selectedHandbookId, setSelectedHandbookId] = useState(HR_HANDBOOK_DOCS[0].id);
+  const [activePage, setActivePage] = useState(
+    persistedSession?.activePage || "PORTAL"
+  );
+  const [selectedHandbookId, setSelectedHandbookId] = useState(
+    persistedSession?.selectedHandbookId || HR_HANDBOOK_DOCS[0].id
+  );
+  const [handbookQuery, setHandbookQuery] = useState("");
+  const handbookSectionRefs = useRef({});
 
-  // Auth state: null | { role: "ADMIN" | "TEAM_LEADER" | "EMPLOYEE", userId: string }
-  const [authUser, setAuthUser] = useState(null);
+  const [authUser, setAuthUser] = useState(persistedSession?.authUser || null);
+  const [sessionExpiresAt, setSessionExpiresAt] = useState(
+    persistedSession?.expiresAt || null
+  );
+
   const [loginRole, setLoginRole] = useState("TEAM_LEADER");
   const [loginIdInput, setLoginIdInput] = useState("");
   const [loginPasswordInput, setLoginPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
 
-  const [leaderViewMode, setLeaderViewMode] = useState("TEAM_LEADER");
-  const [leaderTab, setLeaderTab] = useState("ATTENDANCE");
-  const [adminTab, setAdminTab] = useState("LEADERS");
-  const [inspectedEmpId, setInspectedEmpId] = useState("emp-1");
+  const [leaderViewMode, setLeaderViewMode] = useState(
+    persistedSession?.leaderViewMode || "TEAM_LEADER"
+  );
+  const [leaderTab, setLeaderTab] = useState(
+    persistedSession?.leaderTab || "ATTENDANCE"
+  );
+  const [adminTab, setAdminTab] = useState(
+    persistedSession?.adminTab || "LEADERS"
+  );
+  const [inspectedEmpId, setInspectedEmpId] = useState(
+    persistedSession?.inspectedEmpId || "emp-1"
+  );
+  const [showAccrualDrawer, setShowAccrualDrawer] = useState(false);
 
   // Admin Team Leader management state
   const [editingLeaderId, setEditingLeaderId] = useState(null);
@@ -908,14 +873,12 @@ export default function App() {
     password: "emp123",
     department: "Engineering",
     teamLeaderId: "tl-1",
-    PL: 15,
-    CL: 10,
-    SL: 12,
+    joiningDate: TODAY_ISO,
     CO: 0,
   });
 
   const [calYear, setCalYear] = useState(2026);
-  const [calMonth, setCalMonth] = useState(10);
+  const [calMonth, setCalMonth] = useState(10); // November 2026
 
   const [rosterDate, setRosterDate] = useState("2026-11-20");
   const [searchQuery, setSearchQuery] = useState("");
@@ -936,6 +899,77 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   }, []);
 
+  const goHomePortal = useCallback(() => {
+    setActivePage("PORTAL");
+  }, []);
+
+  // Keep newEmpForm.teamLeaderId aligned with available team leaders
+  useEffect(() => {
+    if (data.teamLeaders.length > 0) {
+      const stillExists = data.teamLeaders.some(
+        (tl) => tl.id === newEmpForm.teamLeaderId
+      );
+      if (!stillExists) {
+        setNewEmpForm((prev) => ({
+          ...prev,
+          teamLeaderId: data.teamLeaders[0].id,
+        }));
+      }
+    }
+  }, [data.teamLeaders, newEmpForm.teamLeaderId]);
+
+  // Persist active authenticated session & UI view across page reloads
+  useEffect(() => {
+    if (!authUser) {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      return;
+    }
+    const expiresAt = sessionExpiresAt || Date.now() + SESSION_TTL_MS;
+    if (!sessionExpiresAt) {
+      setSessionExpiresAt(expiresAt);
+    }
+    try {
+      localStorage.setItem(
+        SESSION_STORAGE_KEY,
+        JSON.stringify({
+          authUser,
+          expiresAt,
+          activePage,
+          selectedHandbookId,
+          leaderViewMode,
+          leaderTab,
+          adminTab,
+          inspectedEmpId,
+        })
+      );
+    } catch {
+      // Ignore storage quota issues
+    }
+  }, [
+    authUser,
+    sessionExpiresAt,
+    activePage,
+    selectedHandbookId,
+    leaderViewMode,
+    leaderTab,
+    adminTab,
+    inspectedEmpId,
+  ]);
+
+  // Periodically check session expiration
+  useEffect(() => {
+    if (!authUser || !sessionExpiresAt) return;
+    const timer = setInterval(() => {
+      if (Date.now() > sessionExpiresAt) {
+        setAuthUser(null);
+        setSessionExpiresAt(null);
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        showToast("Session expired. Please sign in again.", "error");
+      }
+    }, 60 * 1000);
+    return () => clearInterval(timer);
+  }, [authUser, sessionExpiresAt, showToast]);
+
   const seedSupabaseIfEmpty = useCallback(async () => {
     const seed = buildSeedData();
 
@@ -945,7 +979,10 @@ export default function App() {
       .upsert(seed.teamLeaders, { onConflict: "id" });
     await supabase
       .from("employees")
-      .upsert(seed.employees.map(toEmployeeDbRow), { onConflict: "id" });
+      .upsert(
+        seed.employees.map((e) => toEmployeeDbRow(e, e.teamLeaderId, true)),
+        { onConflict: "id" }
+      );
 
     const attRows = Object.entries(seed.attendance).map(([key, rec]) => {
       const idx = key.lastIndexOf("_");
@@ -1003,9 +1040,9 @@ export default function App() {
         (!leaderRows || leaderRows.length === 0) &&
         (!empRows || empRows.length === 0);
 
+      let nextState;
       if (isBrandNewDatabase) {
-        const seeded = await seedSupabaseIfEmpty();
-        setData(seeded);
+        nextState = await seedSupabaseIfEmpty();
       } else {
         const attendanceMap = {};
         (attRows || []).forEach((r) => {
@@ -1016,14 +1053,30 @@ export default function App() {
           };
         });
 
-        setData({
+        nextState = {
           admins: adminRows && adminRows.length > 0 ? adminRows : INITIAL_ADMINS,
           teamLeaders:
             leaderRows && leaderRows.length > 0 ? leaderRows : INITIAL_TEAM_LEADERS,
           employees: (empRows || []).map(mapEmployeeRow),
           attendance: attendanceMap,
           leaveRequests: (leaveRows || []).map(mapLeaveRow),
-        });
+        };
+      }
+
+      setData(nextState);
+
+      if (persistedSession?.authUser) {
+        const { role, userId } = persistedSession.authUser;
+        const exists =
+          (role === "ADMIN" && nextState.admins.some((a) => a.id === userId)) ||
+          (role === "TEAM_LEADER" &&
+            nextState.teamLeaders.some((t) => t.id === userId)) ||
+          (role === "EMPLOYEE" &&
+            nextState.employees.some((e) => e.id === userId));
+        if (!exists) {
+          setAuthUser(null);
+          localStorage.removeItem(SESSION_STORAGE_KEY);
+        }
       }
     } catch (err) {
       console.error("Supabase fetch error:", err);
@@ -1035,11 +1088,42 @@ export default function App() {
     } finally {
       setLoadingDb(false);
     }
-  }, [seedSupabaseIfEmpty]);
+  }, [seedSupabaseIfEmpty, persistedSession]);
 
   useEffect(() => {
     fetchAllFromSupabase();
   }, [fetchAllFromSupabase]);
+
+  // Reference date reflects month end when browsing future months, else today's date
+  const accrualReferenceDate = useMemo(() => {
+    const lastDayOfViewedMonth = new Date(calYear, calMonth + 1, 0);
+    const viewedEndStr = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(
+      lastDayOfViewedMonth.getDate()
+    ).padStart(2, "0")}`;
+    return viewedEndStr > TODAY_ISO ? viewedEndStr : TODAY_ISO;
+  }, [calYear, calMonth]);
+
+  // Compute earned leave balances dynamically for every employee
+  const employeesWithEarnedLeaves = useMemo(() => {
+    return data.employees.map((emp) => {
+      const earned = computeEarnedLeaveBalances(
+        emp,
+        data.leaveRequests,
+        accrualReferenceDate
+      );
+      return {
+        ...emp,
+        monthsEarned: earned.monthsEarned,
+        earnedTotals: earned.earnedTotals,
+        balances: {
+          PL: earned.PL,
+          CL: earned.CL,
+          SL: earned.SL,
+          CO: earned.CO,
+        },
+      };
+    });
+  }, [data.employees, data.leaveRequests, accrualReferenceDate]);
 
   const handleLoginSubmit = (e) => {
     e.preventDefault();
@@ -1054,7 +1138,10 @@ export default function App() {
         setLoginError("Invalid Admin ID or password.");
         return;
       }
-      setAuthUser({ role: "ADMIN", userId: admin.id });
+      const nextAuth = { role: "ADMIN", userId: admin.id };
+      const expiresAt = Date.now() + SESSION_TTL_MS;
+      setAuthUser(nextAuth);
+      setSessionExpiresAt(expiresAt);
       setAdminTab("LEADERS");
       setActivePage("PORTAL");
       setLoginIdInput("");
@@ -1071,7 +1158,10 @@ export default function App() {
         setLoginError("Invalid Team Leader ID or password.");
         return;
       }
-      setAuthUser({ role: "TEAM_LEADER", userId: leader.id });
+      const nextAuth = { role: "TEAM_LEADER", userId: leader.id };
+      const expiresAt = Date.now() + SESSION_TTL_MS;
+      setAuthUser(nextAuth);
+      setSessionExpiresAt(expiresAt);
       setLeaderViewMode("TEAM_LEADER");
       setLeaderTab("ATTENDANCE");
       setActivePage("PORTAL");
@@ -1079,7 +1169,7 @@ export default function App() {
       setLoginPasswordInput("");
       showToast(`Welcome back, ${leader.name}!`);
     } else {
-      const emp = data.employees.find(
+      const emp = employeesWithEarnedLeaves.find(
         (item) =>
           item.empCode.toUpperCase() === code &&
           (item.password || "emp123") === loginPasswordInput
@@ -1088,7 +1178,10 @@ export default function App() {
         setLoginError("Invalid Employee ID or password.");
         return;
       }
-      setAuthUser({ role: "EMPLOYEE", userId: emp.id });
+      const nextAuth = { role: "EMPLOYEE", userId: emp.id };
+      const expiresAt = Date.now() + SESSION_TTL_MS;
+      setAuthUser(nextAuth);
+      setSessionExpiresAt(expiresAt);
       setActivePage("PORTAL");
       setLoginIdInput("");
       setLoginPasswordInput("");
@@ -1098,9 +1191,12 @@ export default function App() {
 
   const handleLogout = () => {
     setAuthUser(null);
+    setSessionExpiresAt(null);
+    localStorage.removeItem(SESSION_STORAGE_KEY);
     setActivePage("PORTAL");
     setEditingLeaderId(null);
     setLoginError("");
+    showToast("Logged out securely.");
   };
 
   // Admin: Start editing a Team Leader
@@ -1244,7 +1340,7 @@ export default function App() {
     showToast(`Removed Team Leader ${leaderName}.`);
   };
 
-  // Add Employee to Supabase
+  // Add Employee to Supabase safely (validates foreign key + schema fallback)
   const handleAddEmployee = async (e) => {
     e.preventDefault();
     const trimmedName = newEmpForm.name.trim();
@@ -1263,34 +1359,58 @@ export default function App() {
       return;
     }
 
+    const joiningDate = normalizeIsoDate(newEmpForm.joiningDate, TODAY_ISO);
+    const matchedLeader =
+      data.teamLeaders.find((tl) => tl.id === newEmpForm.teamLeaderId) ||
+      data.teamLeaders[0] ||
+      null;
+    const validLeaderId = matchedLeader ? matchedLeader.id : null;
+
     const createdEmp = {
       id: `emp-${Date.now()}`,
       name: trimmedName,
       empCode: trimmedCode,
       password: newEmpForm.password.trim() || "emp123",
       department: newEmpForm.department,
-      teamLeaderId: newEmpForm.teamLeaderId || data.teamLeaders[0]?.id || "tl-1",
+      teamLeaderId: validLeaderId,
+      joiningDate,
       onNoticePeriod: false,
       balances: {
-        PL: Number(newEmpForm.PL) || 0,
-        CL: Number(newEmpForm.CL) || 0,
-        SL: Number(newEmpForm.SL) || 0,
+        PL: 0,
+        CL: 0,
+        SL: 0,
         CO: Number(newEmpForm.CO) || 0,
       },
     };
 
-    const { error } = await supabase
+    let { data: insertedRows, error } = await supabase
       .from("employees")
-      .insert(toEmployeeDbRow(createdEmp));
+      .insert(toEmployeeDbRow(createdEmp, validLeaderId, true))
+      .select();
+
+    // Retry without joining_date if that column doesn't exist in the user's Supabase table
+    if (error && error.message?.includes("joining_date")) {
+      const retry = await supabase
+        .from("employees")
+        .insert(toEmployeeDbRow(createdEmp, validLeaderId, false))
+        .select();
+      error = retry.error;
+      insertedRows = retry.data;
+    }
 
     if (error) {
       showToast(`Failed to add employee: ${error.message}`, "error");
       return;
     }
 
+    const persistedEmp =
+      insertedRows && insertedRows[0]
+        ? { ...mapEmployeeRow(insertedRows[0]), joiningDate }
+        : createdEmp;
+
     setData((prev) => ({
       ...prev,
-      employees: [...prev.employees, createdEmp],
+      employees: [...prev.employees, persistedEmp],
     }));
 
     setNewEmpForm({
@@ -1298,13 +1418,13 @@ export default function App() {
       empCode: "",
       password: "emp123",
       department: "Engineering",
-      teamLeaderId: data.teamLeaders[0]?.id || "tl-1",
-      PL: 15,
-      CL: 10,
-      SL: 12,
+      teamLeaderId: validLeaderId || "",
+      joiningDate: TODAY_ISO,
       CO: 0,
     });
-    showToast(`Added ${createdEmp.name} (${createdEmp.empCode}) to Supabase.`);
+    showToast(
+      `Added ${persistedEmp.name} (${persistedEmp.empCode}) — accrual starts Dec 2026.`
+    );
   };
 
   // Remove Employee from Supabase
@@ -1373,9 +1493,19 @@ export default function App() {
     authUser?.role === "EMPLOYEE" ? authUser.userId : inspectedEmpId;
 
   const currentEmployee = useMemo(
-    () => data.employees.find((e) => e.id === activeEmployeeId) || data.employees[0],
-    [data.employees, activeEmployeeId]
+    () =>
+      employeesWithEarnedLeaves.find((e) => e.id === activeEmployeeId) ||
+      employeesWithEarnedLeaves[0],
+    [employeesWithEarnedLeaves, activeEmployeeId]
   );
+
+  // Month-by-month accrual schedule for currentEmployee (extending through at least Feb 2027)
+  const accrualScheduleRows = useMemo(() => {
+    if (!currentEmployee) return [];
+    const previewRef =
+      accrualReferenceDate < "2027-02-28" ? "2027-02-28" : accrualReferenceDate;
+    return buildMonthlyAccrualSchedule(currentEmployee.joiningDate, previewRef);
+  }, [currentEmployee, accrualReferenceDate]);
 
   const computedLeaveDays = useMemo(() => {
     const effectiveEnd = leaveForm.isHalfDay ? leaveForm.startDate : leaveForm.endDate;
@@ -1468,20 +1598,77 @@ export default function App() {
     let absent = 0;
     let approvedLeave = 0;
     let pendingSL = 0;
+    let sundayCompOffEarned = 0;
 
     calendarCells.forEach((c) => {
       if (c.type !== "DAY" || !c.info) return;
-      if (c.info.kind === "PRESENT") present += 1;
-      else if (c.info.kind === "HALF_DAY") halfDay += 1;
-      else if (c.info.kind === "ABSENT") absent += 1;
-      else if (c.info.kind === "APPROVED_LEAVE")
+      if (c.info.kind === "PRESENT") {
+        present += 1;
+        if (c.isSunday) sundayCompOffEarned += 1;
+      } else if (c.info.kind === "HALF_DAY") {
+        halfDay += 1;
+        if (c.isSunday) sundayCompOffEarned += 1;
+      } else if (c.info.kind === "ABSENT") {
+        absent += 1;
+      } else if (c.info.kind === "APPROVED_LEAVE") {
         approvedLeave += c.info.isHalfDay ? 0.5 : 1;
-      else if (c.info.kind === "PENDING_SL")
+      } else if (c.info.kind === "PENDING_SL") {
         pendingSL += c.info.isHalfDay ? 0.5 : 1;
+      }
     });
 
-    return { present, halfDay, absent, approvedLeave, pendingSL };
+    return {
+      present,
+      halfDay,
+      absent,
+      approvedLeave,
+      pendingSL,
+      sundayCompOffEarned,
+    };
   }, [calendarCells]);
+
+  const handleJumpToCurrentMonth = () => {
+    const [y, m] = TODAY_ISO.split("-").map(Number);
+    setCalYear(y);
+    setCalMonth(m - 1);
+  };
+
+  const handleSetRosterToday = () => {
+    setRosterDate(TODAY_ISO);
+  };
+
+  const handleClearRosterFilters = () => {
+    setSearchQuery("");
+    setStatusFilter("ALL");
+  };
+
+  // Handbook quick-jump handler: switches doc if needed, sets filter/highlight, and scrolls to matching section
+  const handleHandbookQuickJump = (jumpItem) => {
+    setSelectedHandbookId(jumpItem.docId);
+    setHandbookQuery(jumpItem.keyword);
+
+    const targetDoc =
+      HR_HANDBOOK_DOCS.find((d) => d.id === jumpItem.docId) || HR_HANDBOOK_DOCS[0];
+    const q = jumpItem.keyword.toLowerCase();
+    const matchedIdx = targetDoc.sections.findIndex((sec) => {
+      const hay = [
+        sec.heading,
+        ...(sec.paragraphs || []),
+        ...(sec.bullets || []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+
+    requestAnimationFrame(() => {
+      const key = `${jumpItem.docId}-${matchedIdx >= 0 ? matchedIdx : 0}`;
+      const el = handbookSectionRefs.current[key];
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+  };
 
   // Submit leave request to Supabase
   const handleSubmitLeave = async (e) => {
@@ -1512,7 +1699,7 @@ export default function App() {
       const availableBalance = currentEmployee.balances[leaveType] ?? 0;
       if (computedLeaveDays > availableBalance) {
         showToast(
-          `Insufficient ${leaveType} balance (${availableBalance} available, ${computedLeaveDays} needed). Consider LWP.`,
+          `Insufficient earned ${leaveType} balance (${availableBalance} available, ${computedLeaveDays} needed). Consider LWP.`,
           "error"
         );
         return;
@@ -1531,7 +1718,7 @@ export default function App() {
       handoverNote: handoverNote.trim() || "Work handover coordinated with team.",
       status: "PENDING",
       reviewedBy: null,
-      createdAt: new Date().toISOString().slice(0, 10),
+      createdAt: TODAY_ISO,
     };
 
     const { error } = await supabase
@@ -1556,7 +1743,7 @@ export default function App() {
     );
   };
 
-  // Mark attendance in Supabase
+  // Mark attendance in Supabase (+1 Comp Off if marking Present or Half-Day on a Sunday)
   const handleMarkAttendance = async (empId, status) => {
     if (getHolidayName(rosterDate)) {
       showToast(
@@ -1565,8 +1752,18 @@ export default function App() {
       );
       return;
     }
+
     const markerId = loggedInLeader?.id || loggedInAdmin?.id || "tl-1";
     const key = `${empId}_${rosterDate}`;
+    const prevRecord = data.attendance[key];
+    const isSunday = isSundayDate(rosterDate);
+
+    const wasSundayCompOff =
+      isSunday &&
+      prevRecord &&
+      (prevRecord.status === "PRESENT" || prevRecord.status === "HALF_DAY");
+    const willEarnSundayCompOff =
+      isSunday && (status === "PRESENT" || status === "HALF_DAY");
 
     const { error } = await supabase.from("attendance").upsert(
       {
@@ -1584,6 +1781,21 @@ export default function App() {
       return;
     }
 
+    let coDelta = 0;
+    if (!wasSundayCompOff && willEarnSundayCompOff) coDelta = 1;
+    else if (wasSundayCompOff && !willEarnSundayCompOff) coDelta = -1;
+
+    const targetEmp = data.employees.find((e) => e.id === empId);
+    let nextCoBalance = targetEmp?.balances?.CO ?? 0;
+
+    if (targetEmp && coDelta !== 0) {
+      nextCoBalance = Math.max(0, Number((nextCoBalance + coDelta).toFixed(2)));
+      await supabase
+        .from("employees")
+        .update({ co_balance: nextCoBalance })
+        .eq("id", empId);
+    }
+
     setData((prev) => ({
       ...prev,
       attendance: {
@@ -1594,13 +1806,32 @@ export default function App() {
           updatedAt: new Date().toISOString(),
         },
       },
+      employees:
+        coDelta !== 0
+          ? prev.employees.map((e) =>
+              e.id === empId
+                ? { ...e, balances: { ...e.balances, CO: nextCoBalance } }
+                : e
+            )
+          : prev.employees,
     }));
+
+    if (coDelta > 0) {
+      showToast(
+        `Sunday work recorded — ${targetEmp?.name || "Employee"} earned +1 Comp Off!`
+      );
+    } else if (coDelta < 0) {
+      showToast(
+        `Sunday Comp Off adjusted (-1 CO) for ${targetEmp?.name || "Employee"}.`
+      );
+    }
   };
 
   // Unmark a single employee's attendance on rosterDate in Supabase
   const handleUnmarkAttendance = async (empId, empName) => {
     const key = `${empId}_${rosterDate}`;
-    if (!data.attendance[key]) return;
+    const existing = data.attendance[key];
+    if (!existing) return;
 
     const { error } = await supabase
       .from("attendance")
@@ -1613,10 +1844,36 @@ export default function App() {
       return;
     }
 
+    const hadSundayCompOff =
+      isSundayDate(rosterDate) &&
+      (existing.status === "PRESENT" || existing.status === "HALF_DAY");
+
+    const targetEmp = data.employees.find((e) => e.id === empId);
+    const nextCoBalance = hadSundayCompOff
+      ? Math.max(0, Number(((targetEmp?.balances?.CO ?? 0) - 1).toFixed(2)))
+      : targetEmp?.balances?.CO ?? 0;
+
+    if (hadSundayCompOff && targetEmp) {
+      await supabase
+        .from("employees")
+        .update({ co_balance: nextCoBalance })
+        .eq("id", empId);
+    }
+
     setData((prev) => {
       const nextAtt = { ...prev.attendance };
       delete nextAtt[key];
-      return { ...prev, attendance: nextAtt };
+      return {
+        ...prev,
+        attendance: nextAtt,
+        employees: hadSundayCompOff
+          ? prev.employees.map((e) =>
+              e.id === empId
+                ? { ...e, balances: { ...e.balances, CO: nextCoBalance } }
+                : e
+            )
+          : prev.employees,
+      };
     });
     showToast(`Unmarked attendance for ${empName} on ${rosterDate}.`);
   };
@@ -1624,6 +1881,15 @@ export default function App() {
   // Clear all attendance marks for the currently selected Sunday in Supabase
   const handleClearSundayMarks = async () => {
     if (!isSundayDate(rosterDate)) return;
+
+    const suffix = `_${rosterDate}`;
+    const affectedEmpIds = Object.entries(data.attendance)
+      .filter(
+        ([key, rec]) =>
+          key.endsWith(suffix) &&
+          (rec.status === "PRESENT" || rec.status === "HALF_DAY")
+      )
+      .map(([key]) => key.slice(0, key.lastIndexOf("_")));
 
     const { error } = await supabase
       .from("attendance")
@@ -1635,8 +1901,18 @@ export default function App() {
       return;
     }
 
+    for (const empId of affectedEmpIds) {
+      const emp = data.employees.find((e) => e.id === empId);
+      if (emp) {
+        const updatedCo = Math.max(0, Number(((emp.balances?.CO ?? 0) - 1).toFixed(2)));
+        await supabase
+          .from("employees")
+          .update({ co_balance: updatedCo })
+          .eq("id", empId);
+      }
+    }
+
     setData((prev) => {
-      const suffix = `_${rosterDate}`;
       const nextAtt = {};
       let removed = 0;
       Object.entries(prev.attendance).forEach(([key, val]) => {
@@ -1646,12 +1922,25 @@ export default function App() {
           nextAtt[key] = val;
         }
       });
+
+      const nextEmployees = prev.employees.map((e) => {
+        const countForEmp = affectedEmpIds.filter((id) => id === e.id).length;
+        if (countForEmp === 0) return e;
+        return {
+          ...e,
+          balances: {
+            ...e.balances,
+            CO: Math.max(0, Number(((e.balances?.CO ?? 0) - countForEmp).toFixed(2))),
+          },
+        };
+      });
+
       showToast(
         removed > 0
           ? `Removed ${removed} Sunday mark(s) on ${rosterDate}.`
           : `No attendance marks found on ${rosterDate}.`
       );
-      return { ...prev, attendance: nextAtt };
+      return { ...prev, attendance: nextAtt, employees: nextEmployees };
     });
   };
 
@@ -1664,16 +1953,12 @@ export default function App() {
       );
       return;
     }
-    if (isSundayDate(rosterDate)) {
-      showToast(
-        `${rosterDate} is a Sunday. Unmark or select a weekday to mark Present.`,
-        "error"
-      );
-      return;
-    }
     const markerId = loggedInLeader?.id || loggedInAdmin?.id || "tl-1";
+    const isSunday = isSundayDate(rosterDate);
 
     const rowsToInsert = [];
+    const compOffEmpIds = [];
+
     data.employees.forEach((emp) => {
       const hasApprovedLeave = data.leaveRequests.some(
         (lr) =>
@@ -1689,6 +1974,7 @@ export default function App() {
           status: "PRESENT",
           marked_by: markerId,
         });
+        if (isSunday) compOffEmpIds.push(emp.id);
       }
     });
 
@@ -1706,6 +1992,14 @@ export default function App() {
       return;
     }
 
+    for (const empId of compOffEmpIds) {
+      const emp = data.employees.find((e) => e.id === empId);
+      if (emp) {
+        const nextCo = Number(((emp.balances?.CO ?? 0) + 1).toFixed(2));
+        await supabase.from("employees").update({ co_balance: nextCo }).eq("id", empId);
+      }
+    }
+
     setData((prev) => {
       const nextAtt = { ...prev.attendance };
       rowsToInsert.forEach((r) => {
@@ -1714,13 +2008,33 @@ export default function App() {
           markedBy: markerId,
         };
       });
-      return { ...prev, attendance: nextAtt };
+
+      const nextEmployees =
+        compOffEmpIds.length > 0
+          ? prev.employees.map((e) =>
+              compOffEmpIds.includes(e.id)
+                ? {
+                    ...e,
+                    balances: {
+                      ...e.balances,
+                      CO: Number(((e.balances?.CO ?? 0) + 1).toFixed(2)),
+                    },
+                  }
+                : e
+            )
+          : prev.employees;
+
+      return { ...prev, attendance: nextAtt, employees: nextEmployees };
     });
 
-    showToast(`Marked ${rowsToInsert.length} unmarked employee(s) as Present.`);
+    showToast(
+      isSunday
+        ? `Marked ${rowsToInsert.length} employee(s) Present on Sunday (+1 Comp Off each).`
+        : `Marked ${rowsToInsert.length} unmarked employee(s) as Present.`
+    );
   };
 
-  // Approve/Reject leave request and update balance in Supabase
+  // Approve/Reject leave request and deduct from earned leave balance in Supabase
   const handleLeaveDecision = async (reqId, decision) => {
     const reviewerId = loggedInLeader?.id || loggedInAdmin?.id || "tl-1";
     const target = data.leaveRequests.find((r) => r.id === reqId);
@@ -1737,13 +2051,13 @@ export default function App() {
     }
 
     let nextBalanceValue = null;
-    const emp = data.employees.find((e) => e.id === target.empId);
+    const emp = employeesWithEarnedLeaves.find((e) => e.id === target.empId);
 
     if (decision === "APPROVED" && target.leaveType !== "LWP" && emp) {
       const currentBal = emp.balances[target.leaveType] ?? 0;
       nextBalanceValue = Math.max(
         0,
-        Number((currentBal - target.daysCount).toFixed(1))
+        Number((currentBal - target.daysCount).toFixed(2))
       );
 
       const balanceColumnMap = {
@@ -1799,7 +2113,7 @@ export default function App() {
 
     showToast(
       decision === "APPROVED"
-        ? "Approved — balance updated and calendar set to Pink."
+        ? "Approved — earned leave deducted and calendar set to Pink."
         : "Leave request rejected."
     );
   };
@@ -1823,12 +2137,12 @@ export default function App() {
       "Department",
       "Notice Period",
       rosterDate,
-      "PL",
-      "CL",
-      "SL",
-      "CO",
+      "Earned PL",
+      "Earned CL",
+      "Earned SL",
+      "Comp Off (CO)",
     ];
-    const rows = data.employees.map((emp) => {
+    const rows = employeesWithEarnedLeaves.map((emp) => {
       const onApprovedLeave = data.leaveRequests.some(
         (lr) =>
           lr.empId === emp.id &&
@@ -1837,6 +2151,8 @@ export default function App() {
       );
       const attStatus = getHolidayName(rosterDate)
         ? `HOLIDAY (${getHolidayName(rosterDate)})`
+        : isSundayDate(rosterDate) && !data.attendance[`${emp.id}_${rosterDate}`]
+        ? "WEEKLY_OFF_SUNDAY"
         : onApprovedLeave
         ? "APPROVED_LEAVE"
         : data.attendance[`${emp.id}_${rosterDate}`]?.status || "UNMARKED";
@@ -1882,13 +2198,13 @@ export default function App() {
       "Pending Sick Leave Days (Grey)",
       "LWP Days",
       "Paid / Attendance Day Credits",
-      "PL Left",
-      "CL Left",
-      "SL Left",
-      "CO Left",
+      "Earned PL Left",
+      "Earned CL Left",
+      "Earned SL Left",
+      "Comp Off (CO)",
     ];
 
-    const rows = data.employees.map((emp) => {
+    const rows = employeesWithEarnedLeaves.map((emp) => {
       let fullDays = 0;
       let halfDays = 0;
       let absentDays = 0;
@@ -1956,7 +2272,7 @@ export default function App() {
   };
 
   const filteredRoster = useMemo(() => {
-    return data.employees
+    return employeesWithEarnedLeaves
       .map((emp) => {
         const approvedLeave = data.leaveRequests.find(
           (lr) =>
@@ -1978,7 +2294,7 @@ export default function App() {
         return matchesQuery && matchesStatus;
       });
   }, [
-    data.employees,
+    employeesWithEarnedLeaves,
     data.leaveRequests,
     data.attendance,
     rosterDate,
@@ -1987,7 +2303,7 @@ export default function App() {
   ]);
 
   const rosterSummary = useMemo(() => {
-    const all = data.employees.map((emp) => {
+    const all = employeesWithEarnedLeaves.map((emp) => {
       const approvedLeave = data.leaveRequests.some(
         (lr) =>
           lr.empId === emp.id &&
@@ -2004,7 +2320,7 @@ export default function App() {
       onLeave: all.filter((s) => s === "ON_LEAVE").length,
       unmarked: all.filter((s) => s === "UNMARKED").length,
     };
-  }, [data.employees, data.leaveRequests, data.attendance, rosterDate]);
+  }, [employeesWithEarnedLeaves, data.leaveRequests, data.attendance, rosterDate]);
 
   const selectedIsSunday = isSundayDate(rosterDate);
 
@@ -2022,10 +2338,14 @@ export default function App() {
       };
     }
     if (cell.isSunday) {
+      const workedSunday =
+        cell.info?.kind === "PRESENT" || cell.info?.kind === "HALF_DAY";
       return {
-        className: "bg-slate-100 text-slate-400 border-slate-200",
+        className: workedSunday
+          ? "bg-violet-100 text-violet-950 border-violet-300 font-semibold"
+          : "bg-slate-100 text-slate-600 border-slate-200 font-medium",
         style: {},
-        badge: "Sun",
+        badge: workedSunday ? "Weekly Off • +1 CO" : "Weekly Off",
       };
     }
     if (!cell.info) {
@@ -2103,7 +2423,7 @@ export default function App() {
               type="text"
               value={newEmpForm.name}
               onChange={(e) => setNewEmpForm((p) => ({ ...p, name: e.target.value }))}
-              placeholder="e.g. Sourav Mondal"
+              placeholder="e.g. Bibek Kar"
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-indigo-500 focus:outline-none"
               required
             />
@@ -2120,7 +2440,7 @@ export default function App() {
                 onChange={(e) =>
                   setNewEmpForm((p) => ({ ...p, empCode: e.target.value }))
                 }
-                placeholder="e.g. EMP126"
+                placeholder="e.g. JSW123"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs uppercase focus:border-indigo-500 focus:outline-none"
                 required
               />
@@ -2180,60 +2500,42 @@ export default function App() {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Initial Leave Balances (Indiiserve Policy Defaults)
-            </label>
-            <div className="grid grid-cols-4 gap-2">
-              <div>
-                <span className="block text-[10px] text-slate-500">PL</span>
-                <input
-                  type="number"
-                  step="0.5"
-                  value={newEmpForm.PL}
-                  onChange={(e) =>
-                    setNewEmpForm((p) => ({ ...p, PL: e.target.value }))
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
-                />
-              </div>
-              <div>
-                <span className="block text-[10px] text-slate-500">CL</span>
-                <input
-                  type="number"
-                  step="0.5"
-                  value={newEmpForm.CL}
-                  onChange={(e) =>
-                    setNewEmpForm((p) => ({ ...p, CL: e.target.value }))
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
-                />
-              </div>
-              <div>
-                <span className="block text-[10px] text-slate-500">SL</span>
-                <input
-                  type="number"
-                  step="0.5"
-                  value={newEmpForm.SL}
-                  onChange={(e) =>
-                    setNewEmpForm((p) => ({ ...p, SL: e.target.value }))
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
-                />
-              </div>
-              <div>
-                <span className="block text-[10px] text-slate-500">CO</span>
-                <input
-                  type="number"
-                  step="0.5"
-                  value={newEmpForm.CO}
-                  onChange={(e) =>
-                    setNewEmpForm((p) => ({ ...p, CO: e.target.value }))
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
-                />
-              </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Joining Date
+              </label>
+              <input
+                type="date"
+                value={newEmpForm.joiningDate}
+                onChange={(e) =>
+                  setNewEmpForm((p) => ({ ...p, joiningDate: e.target.value }))
+                }
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-indigo-500 focus:outline-none"
+              />
             </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Initial Comp Off (CO)
+              </label>
+              <input
+                type="number"
+                step="0.5"
+                min="0"
+                value={newEmpForm.CO}
+                onChange={(e) =>
+                  setNewEmpForm((p) => ({ ...p, CO: e.target.value }))
+                }
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-3 text-[11px] text-indigo-950">
+            <strong>Monthly Accrual Rule:</strong> Accrual begins from the 1st of the
+            month after joining (or joining month if on the 1st), adding{" "}
+            <strong>1.25 PL</strong>, <strong>1.00 SL</strong>, and{" "}
+            <strong>0.83 CL</strong> per month.
           </div>
 
           <button
@@ -2250,364 +2552,440 @@ export default function App() {
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h2 className="text-base font-bold text-slate-900">
-              Current Employees ({data.employees.length})
+              Current Employees ({employeesWithEarnedLeaves.length})
             </h2>
             <p className="text-xs text-slate-500">
-              Remove departed staff or inspect their calendar and balances.
+              Earned leave balances update monthly and deduct approved leaves.
             </p>
           </div>
         </div>
 
         <div className="divide-y divide-slate-100 max-h-[520px] overflow-y-auto">
-          {data.employees.map((emp) => {
-            const assignedTl = data.teamLeaders.find((t) => t.id === emp.teamLeaderId);
-            return (
-              <div
-                key={emp.id}
-                className="flex flex-wrap items-center justify-between gap-3 py-3 px-2 rounded-lg transition hover:bg-slate-50"
-              >
-                <div>
-                  <div className="text-sm font-semibold text-slate-900">
-                    {emp.name}{" "}
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-mono text-slate-700">
-                      {emp.empCode}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 text-xs text-slate-500">
-                    {emp.department} • TL: {assignedTl?.name || "Unassigned"} • Pass:{" "}
-                    <span className="font-mono">{emp.password || "emp123"}</span> • PL:{" "}
-                    {emp.balances.PL} | CL: {emp.balances.CL} | SL: {emp.balances.SL}
-                  </div>
+          {employeesWithEarnedLeaves.map((emp) => (
+            <div
+              key={emp.id}
+              className="flex flex-wrap items-center justify-between gap-3 py-3 px-2 rounded-lg transition hover:bg-slate-50"
+            >
+              <div>
+                <div className="text-sm font-semibold text-slate-900">
+                  {emp.name}{" "}
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-mono text-slate-700">
+                    {emp.empCode}
+                  </span>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  {isLeaderUser && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setInspectedEmpId(emp.id);
-                        setLeaderViewMode("EMPLOYEE");
-                      }}
-                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-                    >
-                      View Calendar
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveEmployee(emp.id, emp.name)}
-                    className="flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    Remove
-                  </button>
+                <div className="mt-0.5 text-xs text-slate-500">
+                  {emp.department} • Joined: {emp.joiningDate} • Earned (
+                  {emp.monthsEarned} mo): PL {emp.balances.PL} | CL{" "}
+                  {emp.balances.CL} | SL {emp.balances.SL} | CO {emp.balances.CO}
                 </div>
               </div>
-            );
-          })}
+
+              <div className="flex items-center gap-2">
+                {isLeaderUser && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInspectedEmpId(emp.id);
+                      setLeaderViewMode("EMPLOYEE");
+                    }}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    View Calendar
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleRemoveEmployee(emp.id, emp.name)}
+                  className="flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
 
   // Reusable Attendance & Leave Approval Section
-  const renderAttendanceAndLeavesSection = () => (
-    <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-          <div className="text-xs font-medium text-emerald-700">Present</div>
-          <div className="mt-1 text-2xl font-bold text-emerald-900">
-            {rosterSummary.present}
-          </div>
-        </div>
-        <div className="rounded-xl border border-emerald-200 bg-white p-4">
-          <div className="text-xs font-medium text-emerald-700">Half-Day</div>
-          <div className="mt-1 text-2xl font-bold text-slate-900">
-            {rosterSummary.halfDay}
-          </div>
-        </div>
-        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
-          <div className="text-xs font-medium text-rose-700">Absent</div>
-          <div className="mt-1 text-2xl font-bold text-rose-900">
-            {rosterSummary.absent}
-          </div>
-        </div>
-        <div className="rounded-xl border border-pink-200 bg-pink-50 p-4">
-          <div className="text-xs font-medium text-pink-700">Approved Leave</div>
-          <div className="mt-1 text-2xl font-bold text-pink-900">
-            {rosterSummary.onLeave}
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-4 col-span-2 sm:col-span-1">
-          <div className="text-xs font-medium text-slate-500">Unmarked</div>
-          <div className="mt-1 text-2xl font-bold text-slate-900">
-            {rosterSummary.unmarked}
-          </div>
-        </div>
-      </div>
+  const renderAttendanceAndLeavesSection = () => {
+    const hasActiveFilter =
+      searchQuery.trim().length > 0 || statusFilter !== "ALL";
 
-      {getHolidayName(rosterDate) && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-900">
-          {rosterDate} is a National Holiday ({getHolidayName(rosterDate)}) under
-          Indiiserve Policy Section 3.6.
-        </div>
-      )}
-
-      {selectedIsSunday && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950">
-          <div className="font-semibold">
-            {rosterDate} is a Sunday. You can unmark any accidental marks below or clear
-            all marks on this Sunday.
-          </div>
-          <button
-            type="button"
-            onClick={handleClearSundayMarks}
-            className="flex items-center gap-1.5 rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-800"
-          >
-            <Undo2 className="h-3.5 w-3.5" />
-            Clear Sunday Marks
-          </button>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs lg:col-span-8">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-base font-bold text-slate-900">
-                Daily Attendance Roster
-              </h2>
-              <p className="text-xs text-slate-500">
-                Mark Present, Half-Day, or Absent per day, or tap Unmark to remove a mark.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                type="date"
-                value={rosterDate}
-                onChange={(e) => setRosterDate(e.target.value)}
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700"
-              />
-              <button
-                type="button"
-                onClick={handleBulkMarkPresent}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
-              >
-                <UserCheck className="h-3.5 w-3.5" />
-                Mark Unmarked Present
-              </button>
-              <button
-                type="button"
-                onClick={handleExportCSV}
-                title="Export selected day's attendance CSV"
-                className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
-              >
-                <Download className="h-3.5 w-3.5" />
-                Day CSV
-              </button>
-              <button
-                type="button"
-                onClick={handleExportMonthEndSummaryCSV}
-                title={`Export full month-end summary CSV for ${rosterDate.slice(0, 7)}`}
-                className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                Month Summary CSV
-              </button>
+    return (
+      <>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <div className="text-xs font-medium text-emerald-700">Present</div>
+            <div className="mt-1 text-2xl font-bold text-emerald-900">
+              {rosterSummary.present}
             </div>
           </div>
-
-          <div className="mb-4 flex flex-wrap items-center gap-3">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search employee name or code..."
-                className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-1.5 text-xs focus:border-indigo-500 focus:outline-none"
-              />
+          <div className="rounded-xl border border-emerald-200 bg-white p-4">
+            <div className="text-xs font-medium text-emerald-700">Half-Day</div>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {rosterSummary.halfDay}
             </div>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700"
+          </div>
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
+            <div className="text-xs font-medium text-rose-700">Absent</div>
+            <div className="mt-1 text-2xl font-bold text-rose-900">
+              {rosterSummary.absent}
+            </div>
+          </div>
+          <div className="rounded-xl border border-pink-200 bg-pink-50 p-4">
+            <div className="text-xs font-medium text-pink-700">Approved Leave</div>
+            <div className="mt-1 text-2xl font-bold text-pink-900">
+              {rosterSummary.onLeave}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4 col-span-2 sm:col-span-1">
+            <div className="text-xs font-medium text-slate-500">Unmarked</div>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {rosterSummary.unmarked}
+            </div>
+          </div>
+        </div>
+
+        {getHolidayName(rosterDate) && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-900">
+            {rosterDate} is a National Holiday ({getHolidayName(rosterDate)}) under
+            Indiiserve Policy Section 3.6.
+          </div>
+        )}
+
+        {selectedIsSunday && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-300 bg-violet-50 px-4 py-3 text-xs text-violet-950">
+            <div className="font-semibold">
+              {rosterDate} is a Sunday (Weekly Off). Marking Present or Half-Day grants{" "}
+              <span className="underline">+1 Comp Off</span> automatically.
+            </div>
+            <button
+              type="button"
+              onClick={handleClearSundayMarks}
+              className="flex items-center gap-1.5 rounded-lg bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-violet-800"
             >
-              <option value="ALL">All Statuses</option>
-              <option value="UNMARKED">Unmarked</option>
-              <option value="PRESENT">Present</option>
-              <option value="HALF_DAY">Half-Day</option>
-              <option value="ABSENT">Absent</option>
-              <option value="ON_LEAVE">Approved Leave</option>
-            </select>
+              <Undo2 className="h-3.5 w-3.5" />
+              Clear Sunday Marks
+            </button>
           </div>
+        )}
 
-          <div className="divide-y divide-slate-100 max-h-[540px] overflow-y-auto">
-            {filteredRoster.map((emp) => (
-              <div
-                key={emp.id}
-                className="flex flex-wrap items-center justify-between gap-3 py-3 px-2 rounded-lg transition hover:bg-slate-50"
-              >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-slate-900">
-                      {emp.name}{" "}
-                      <span className="text-xs font-normal text-slate-500">
-                        ({emp.empCode})
-                      </span>
-                    </span>
-                    {emp.onNoticePeriod && (
-                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-                        Notice
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-slate-500">
-                    {emp.department} • PL: {emp.balances.PL} | CL: {emp.balances.CL} | SL:{" "}
-                    {emp.balances.SL} | CO: {emp.balances.CO}
-                  </div>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs lg:col-span-8">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">
+                  Daily Attendance Roster
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Mark Present, Half-Day, or Absent per day. Sunday work earns +1 Comp Off.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={rosterDate}
+                    onChange={(e) => setRosterDate(e.target.value)}
+                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSetRosterToday}
+                    className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                  >
+                    Today
+                  </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={handleBulkMarkPresent}
+                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
+                >
+                  <UserCheck className="h-3.5 w-3.5" />
+                  Mark Unmarked Present
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportCSV}
+                  title="Export selected day's attendance CSV"
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Day CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportMonthEndSummaryCSV}
+                  title={`Export full month-end summary CSV for ${rosterDate.slice(0, 7)}`}
+                  className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                >
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  Month Summary CSV
+                </button>
+              </div>
+            </div>
 
-                {emp.effectiveStatus === "ON_LEAVE" ? (
-                  <span className="rounded-full bg-pink-100 px-3 py-1 text-xs font-semibold text-pink-800">
-                    Approved Leave ({emp.approvedLeave?.leaveType})
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search employee name or code..."
+                  className="w-full rounded-lg border border-slate-300 pl-9 pr-3 py-1.5 text-xs focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700"
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="UNMARKED">Unmarked</option>
+                <option value="PRESENT">Present</option>
+                <option value="HALF_DAY">Half-Day</option>
+                <option value="ABSENT">Absent</option>
+                <option value="ON_LEAVE">Approved Leave</option>
+              </select>
+            </div>
+
+            {/* Active Search & Filter Reset Pill Bar */}
+            {hasActiveFilter && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-medium text-slate-600">
+                    Active filters ({filteredRoster.length} shown):
                   </span>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleMarkAttendance(emp.id, "PRESENT")}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
-                        emp.effectiveStatus === "PRESENT"
-                          ? "bg-emerald-600 text-white shadow-2xs"
-                          : "bg-slate-100 text-slate-700 hover:bg-emerald-100 hover:text-emerald-800"
-                      }`}
-                    >
-                      Present
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleMarkAttendance(emp.id, "HALF_DAY")}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
-                        emp.effectiveStatus === "HALF_DAY"
-                          ? "bg-emerald-500 text-white shadow-2xs"
-                          : "bg-slate-100 text-slate-700 hover:bg-emerald-50"
-                      }`}
-                    >
-                      Half-Day
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleMarkAttendance(emp.id, "ABSENT")}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
-                        emp.effectiveStatus === "ABSENT"
-                          ? "bg-rose-600 text-white shadow-2xs"
-                          : "bg-slate-100 text-slate-700 hover:bg-rose-100 hover:text-rose-800"
-                      }`}
-                    >
-                      Absent
-                    </button>
-                    {emp.isMarked && (
+                  {searchQuery.trim() && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-0.5 text-[11px] font-semibold text-indigo-800 border border-indigo-200">
+                      Search: &ldquo;{searchQuery.trim()}&rdquo;
                       <button
                         type="button"
-                        onClick={() => handleUnmarkAttendance(emp.id, emp.name)}
-                        title={`Unmark attendance for ${emp.name} on ${rosterDate}`}
-                        className="flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-amber-50 hover:border-amber-300 hover:text-amber-900"
+                        onClick={() => setSearchQuery("")}
+                        aria-label="Remove search filter"
+                        className="text-indigo-500 hover:text-indigo-900"
                       >
-                        <Undo2 className="h-3.5 w-3.5" />
-                        Unmark
+                        <X className="h-3 w-3" />
                       </button>
-                    )}
-                  </div>
-                )}
+                    </span>
+                  )}
+                  {statusFilter !== "ALL" && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-0.5 text-[11px] font-semibold text-indigo-800 border border-indigo-200">
+                      Status: {statusFilter.replace("_", " ")}
+                      <button
+                        type="button"
+                        onClick={() => setStatusFilter("ALL")}
+                        aria-label="Remove status filter"
+                        className="text-indigo-500 hover:text-indigo-900"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearRosterFilters}
+                  className="inline-flex items-center gap-1 rounded-full bg-indigo-600 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-indigo-700"
+                >
+                  <X className="h-3 w-3" />
+                  Clear Filters
+                </button>
               </div>
-            ))}
-          </div>
-        </div>
+            )}
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs lg:col-span-4">
-          <div className="mb-4 flex items-center gap-2">
-            <Clock className="h-5 w-5 text-amber-600" />
-            <h2 className="text-base font-bold text-slate-900">Leave Approval Queue</h2>
-          </div>
-
-          <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
-            {data.leaveRequests.filter((r) => r.status === "PENDING").length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500">
-                No pending leave requests right now.
-              </div>
-            ) : (
-              data.leaveRequests
-                .filter((r) => r.status === "PENDING")
-                .map((lr) => {
-                  const emp = data.employees.find((e) => e.id === lr.empId);
-                  return (
-                    <div
-                      key={lr.id}
-                      className="rounded-xl border border-slate-200 bg-slate-50/90 p-3.5 text-xs"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="font-bold text-slate-900">
-                            {emp?.name} ({emp?.empCode})
-                          </div>
-                          <div className="mt-0.5 font-semibold text-indigo-700">
-                            {lr.leaveType} • {lr.daysCount} day
-                            {lr.daysCount === 1 ? "" : "s"}
-                          </div>
-                        </div>
-                        <span className="rounded bg-gray-200 px-2 py-0.5 text-[10px] font-bold text-gray-800">
-                          PENDING
+            <div className="divide-y divide-slate-100 max-h-[540px] overflow-y-auto">
+              {filteredRoster.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-xs text-slate-500">
+                  No employees match the current filter.{" "}
+                  <button
+                    type="button"
+                    onClick={handleClearRosterFilters}
+                    className="font-semibold text-indigo-600 underline"
+                  >
+                    Clear Filters
+                  </button>
+                </div>
+              ) : (
+                filteredRoster.map((emp) => (
+                  <div
+                    key={emp.id}
+                    className="flex flex-wrap items-center justify-between gap-3 py-3 px-2 rounded-lg transition hover:bg-slate-50"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-900">
+                          {emp.name}{" "}
+                          <span className="text-xs font-normal text-slate-500">
+                            ({emp.empCode})
+                          </span>
                         </span>
-                      </div>
-
-                      <div className="mt-2 text-slate-600">
-                        Dates:{" "}
-                        <span className="font-medium text-slate-800">{lr.startDate}</span>
-                        {lr.endDate !== lr.startDate && (
-                          <>
-                            {" "}
-                            to{" "}
-                            <span className="font-medium text-slate-800">
-                              {lr.endDate}
-                            </span>
-                          </>
+                        {emp.onNoticePeriod && (
+                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                            Notice
+                          </span>
                         )}
                       </div>
-                      <p className="mt-1 text-slate-600 italic">“{lr.reason}”</p>
-                      {lr.handoverNote && (
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          Handover: {lr.handoverNote}
-                        </p>
-                      )}
-
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleLeaveDecision(lr.id, "APPROVED")}
-                          className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-pink-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-pink-700"
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          Approve (Pink)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleLeaveDecision(lr.id, "REJECTED")}
-                          className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-rose-50 hover:text-rose-700"
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          Reject
-                        </button>
+                      <div className="text-xs text-slate-500">
+                        {emp.department} • Earned PL: {emp.balances.PL} | CL:{" "}
+                        {emp.balances.CL} | SL: {emp.balances.SL} | CO: {emp.balances.CO}
                       </div>
                     </div>
-                  );
-                })
-            )}
+
+                    {emp.effectiveStatus === "ON_LEAVE" ? (
+                      <span className="rounded-full bg-pink-100 px-3 py-1 text-xs font-semibold text-pink-800">
+                        Approved Leave ({emp.approvedLeave?.leaveType})
+                      </span>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleMarkAttendance(emp.id, "PRESENT")}
+                          className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                            emp.effectiveStatus === "PRESENT"
+                              ? "bg-emerald-600 text-white shadow-2xs"
+                              : "bg-slate-100 text-slate-700 hover:bg-emerald-100 hover:text-emerald-800"
+                          }`}
+                        >
+                          Present
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMarkAttendance(emp.id, "HALF_DAY")}
+                          className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                            emp.effectiveStatus === "HALF_DAY"
+                              ? "bg-emerald-500 text-white shadow-2xs"
+                              : "bg-slate-100 text-slate-700 hover:bg-emerald-50"
+                          }`}
+                        >
+                          Half-Day
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMarkAttendance(emp.id, "ABSENT")}
+                          className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                            emp.effectiveStatus === "ABSENT"
+                              ? "bg-rose-600 text-white shadow-2xs"
+                              : "bg-slate-100 text-slate-700 hover:bg-rose-100 hover:text-rose-800"
+                          }`}
+                        >
+                          Absent
+                        </button>
+                        {emp.isMarked && (
+                          <button
+                            type="button"
+                            onClick={() => handleUnmarkAttendance(emp.id, emp.name)}
+                            title={`Unmark attendance for ${emp.name} on ${rosterDate}`}
+                            className="flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-amber-50 hover:border-amber-300 hover:text-amber-900"
+                          >
+                            <Undo2 className="h-3.5 w-3.5" />
+                            Unmark
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs lg:col-span-4">
+            <div className="mb-4 flex items-center gap-2">
+              <Clock className="h-5 w-5 text-amber-600" />
+              <h2 className="text-base font-bold text-slate-900">
+                Leave Approval Queue
+              </h2>
+            </div>
+
+            <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+              {data.leaveRequests.filter((r) => r.status === "PENDING").length ===
+              0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500">
+                  No pending leave requests right now.
+                </div>
+              ) : (
+                data.leaveRequests
+                  .filter((r) => r.status === "PENDING")
+                  .map((lr) => {
+                    const emp = employeesWithEarnedLeaves.find(
+                      (e) => e.id === lr.empId
+                    );
+                    return (
+                      <div
+                        key={lr.id}
+                        className="rounded-xl border border-slate-200 bg-slate-50/90 p-3.5 text-xs"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="font-bold text-slate-900">
+                              {emp?.name} ({emp?.empCode})
+                            </div>
+                            <div className="mt-0.5 font-semibold text-indigo-700">
+                              {lr.leaveType} • {lr.daysCount} day
+                              {lr.daysCount === 1 ? "" : "s"}
+                            </div>
+                          </div>
+                          <span className="rounded bg-gray-200 px-2 py-0.5 text-[10px] font-bold text-gray-800">
+                            PENDING
+                          </span>
+                        </div>
+
+                        <div className="mt-2 text-slate-600">
+                          Dates:{" "}
+                          <span className="font-medium text-slate-800">
+                            {lr.startDate}
+                          </span>
+                          {lr.endDate !== lr.startDate && (
+                            <>
+                              {" "}
+                              to{" "}
+                              <span className="font-medium text-slate-800">
+                                {lr.endDate}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                        <p className="mt-1 text-slate-600 italic">“{lr.reason}”</p>
+                        {lr.handoverNote && (
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            Handover: {lr.handoverNote}
+                          </p>
+                        )}
+
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleLeaveDecision(lr.id, "APPROVED")}
+                            className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-pink-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-pink-700"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Approve (Pink)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleLeaveDecision(lr.id, "REJECTED")}
+                            className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-rose-50 hover:text-rose-700"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
+            </div>
           </div>
         </div>
-      </div>
-    </>
-  );
+      </>
+    );
+  };
 
   // ==================== LOADING SCREEN ====================
   if (loadingDb) {
@@ -2615,7 +2993,7 @@ export default function App() {
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
         <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-6 py-4 text-sm font-semibold text-slate-700 shadow-xs">
           <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />
-          <span>Connecting to InDiiServe Supabase database...</span>
+          <span>Connecting to InDiiServe database...</span>
         </div>
       </div>
     );
@@ -2626,8 +3004,8 @@ export default function App() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-100 via-indigo-50/40 to-slate-100 px-4 py-10">
         <div className="w-full max-w-md rounded-2xl border border-slate-200/90 bg-white p-8 shadow-xl shadow-slate-200/60">
-          <div className="flex flex-col gap-2.5">
-            <InDiiServeLogo />
+          <div className="flex flex-col gap-1">
+            <InDiiServeLogo variant="login" />
             <p className="text-xs text-slate-500">
               Attendance & Leave Management System
             </p>
@@ -2758,6 +3136,21 @@ export default function App() {
   const activeDoc =
     HR_HANDBOOK_DOCS.find((d) => d.id === selectedHandbookId) || HR_HANDBOOK_DOCS[0];
 
+  const filteredHandbookSections = activeDoc.sections
+    .map((sec, idx) => ({ ...sec, originalIdx: idx }))
+    .filter((sec) => {
+      const q = handbookQuery.trim().toLowerCase();
+      if (!q) return true;
+      const hay = [
+        sec.heading,
+        ...(sec.paragraphs || []),
+        ...(sec.bullets || []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+
   return (
     <div className="min-h-screen bg-slate-50/90 text-slate-800">
       {toast && (
@@ -2779,7 +3172,7 @@ export default function App() {
       <header className="sticky top-0 z-30 border-b border-slate-200/90 bg-white/95 backdrop-blur-xs">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-3.5 sm:px-6">
           <div className="flex items-center gap-3">
-            <InDiiServeLogo compact />
+            <InDiiServeLogo compact onClick={goHomePortal} />
             <div className="hidden sm:block h-6 w-px bg-slate-200" />
             <div>
               <h1 className="text-sm sm:text-base font-bold tracking-tight text-slate-900">
@@ -2798,7 +3191,7 @@ export default function App() {
             {activePage === "HANDBOOK" ? (
               <button
                 type="button"
-                onClick={() => setActivePage("PORTAL")}
+                onClick={goHomePortal}
                 className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
@@ -2808,7 +3201,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActivePage("HANDBOOK")}
-                className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-gradient-to-r from-indigo-50 to-purple-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 transition hover:from-indigo-100 hover:to-purple-100"
               >
                 <BookOpen className="h-3.5 w-3.5" />
                 HR Handbook
@@ -2850,7 +3243,7 @@ export default function App() {
                     onChange={(e) => setInspectedEmpId(e.target.value)}
                     className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-2xs focus:border-indigo-500 focus:outline-none"
                   >
-                    {data.employees.map((emp) => (
+                    {employeesWithEarnedLeaves.map((emp) => (
                       <option key={emp.id} value={emp.id}>
                         {emp.empCode} — {emp.name}
                       </option>
@@ -2874,62 +3267,167 @@ export default function App() {
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
         {activePage === "HANDBOOK" ? (
-          /* ==================== HR HANDBOOK PAGE ==================== */
+          /* ==================== COLORFUL PROFESSIONAL HR HANDBOOK PAGE ==================== */
           <div className="space-y-6">
-            <div className="rounded-2xl border border-slate-200 bg-white px-6 py-4 shadow-xs">
-              <h2 className="text-xl font-bold text-slate-900">HR Handbook</h2>
+            <div className="overflow-hidden rounded-2xl border border-indigo-200/80 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 px-6 py-6 text-white shadow-md">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold tracking-wide text-indigo-100">
+                    <Award className="h-3.5 w-3.5 text-amber-300" />
+                    InDiiServe Corporate Governance
+                  </span>
+                  <h2 className="mt-2 text-2xl font-bold tracking-tight">
+                    HR Handbook & Company Policies
+                  </h2>
+                  <p className="mt-1 text-xs sm:text-sm text-indigo-100/85">
+                    Structured guidelines for workplace conduct, monthly leave accruals,
+                    Sunday comp-off rules, exits, and payroll.
+                  </p>
+                </div>
+              </div>
             </div>
 
-            <div className="flex flex-wrap -mx-1.5">
+            {/* Handbook Search & Quick Jump Pills */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="relative flex-1 min-w-[220px]">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={handbookQuery}
+                    onChange={(e) => setHandbookQuery(e.target.value)}
+                    placeholder="Filter policy clauses (e.g. Comp Off, notice period, payroll, POSH)..."
+                    className="w-full rounded-lg border border-slate-300 pl-9 pr-8 py-1.5 text-xs focus:border-indigo-500 focus:outline-none"
+                  />
+                  {handbookQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setHandbookQuery("")}
+                      aria-label="Clear handbook search"
+                      className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-700"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Quick jump:
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                {HANDBOOK_QUICK_JUMPS.map((jump) => {
+                  const isActiveJump =
+                    handbookQuery.toLowerCase() === jump.keyword.toLowerCase() &&
+                    selectedHandbookId === jump.docId;
+                  return (
+                    <button
+                      key={jump.label}
+                      type="button"
+                      onClick={() => handleHandbookQuickJump(jump)}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                        isActiveJump
+                          ? "bg-indigo-600 text-white shadow-2xs"
+                          : "bg-slate-100 text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                      }`}
+                    >
+                      {jump.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
               {HR_HANDBOOK_DOCS.map((doc) => {
                 const isSelected = doc.id === activeDoc.id;
                 return (
-                  <div
+                  <button
                     key={doc.id}
-                    className="w-1/2 sm:w-1/4 px-1.5 mb-3 sm:mb-0"
-                    style={{ flex: "0 0 25%" }}
+                    type="button"
+                    onClick={() => setSelectedHandbookId(doc.id)}
+                    className={`flex flex-col items-start justify-between rounded-2xl border bg-gradient-to-br p-4 text-left transition ${
+                      isSelected ? doc.cardBg : doc.idleCard
+                    }`}
                   >
-                    <button
-                      type="button"
-                      onClick={() => setSelectedHandbookId(doc.id)}
-                      className={`flex h-full min-h-[72px] w-full items-center justify-center rounded-xl border-2 px-3 py-3 text-center text-xs sm:text-sm font-bold transition ${
-                        isSelected ? doc.accentClass : doc.idleClass
+                    <span
+                      className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                        isSelected
+                          ? "bg-white/20 text-white"
+                          : "bg-slate-900/5 text-slate-700"
                       }`}
                     >
-                      <span>{doc.title}</span>
-                    </button>
-                  </div>
+                      {doc.badge}
+                    </span>
+                    <span className="mt-3 text-sm font-bold leading-snug">
+                      {doc.title}
+                    </span>
+                  </button>
                 );
               })}
             </div>
 
-            <article className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-xs">
-              <h3 className="border-b border-slate-200 pb-3 text-xl font-extrabold text-slate-900">
-                {activeDoc.title}
-              </h3>
+            <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className={`px-6 py-5 sm:px-8 ${activeDoc.headerBand}`}>
+                <div className="text-xs font-semibold uppercase tracking-wider opacity-90">
+                  {activeDoc.badge}
+                </div>
+                <h3 className="mt-1 text-xl sm:text-2xl font-extrabold">
+                  {activeDoc.title}
+                </h3>
+              </div>
 
-              <div className="mt-5 space-y-5">
-                {activeDoc.sections.map((sec, idx) => (
-                  <section key={idx} className="space-y-2">
-                    <h4 className="text-sm font-bold text-slate-900">{sec.heading}</h4>
-                    {sec.paragraphs &&
-                      sec.paragraphs.map((p, pIdx) => (
-                        <p
-                          key={pIdx}
-                          className="text-sm leading-relaxed text-slate-700"
-                        >
-                          {p}
-                        </p>
-                      ))}
-                    {sec.bullets && sec.bullets.length > 0 && (
-                      <ul className="list-disc space-y-1 pl-5 text-sm leading-relaxed text-slate-700">
-                        {sec.bullets.map((b, bIdx) => (
-                          <li key={bIdx}>{b}</li>
+              <div className="p-6 sm:p-8 space-y-5">
+                {filteredHandbookSections.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-xs text-slate-500">
+                    No sections in <strong>{activeDoc.title}</strong> match &ldquo;
+                    {handbookQuery}&rdquo;.{" "}
+                    <button
+                      type="button"
+                      onClick={() => setHandbookQuery("")}
+                      className="font-semibold text-indigo-600 underline"
+                    >
+                      Reset filter
+                    </button>
+                  </div>
+                ) : (
+                  filteredHandbookSections.map((sec) => (
+                    <section
+                      key={sec.originalIdx}
+                      ref={(el) => {
+                        handbookSectionRefs.current[
+                          `${activeDoc.id}-${sec.originalIdx}`
+                        ] = el;
+                      }}
+                      className={`rounded-xl p-4 sm:p-5 space-y-2.5 ${activeDoc.sectionAccent}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`h-2.5 w-2.5 rounded-full shrink-0 ${activeDoc.dotColor}`}
+                        />
+                        <h4 className="text-sm font-bold text-slate-900">
+                          {sec.heading}
+                        </h4>
+                      </div>
+                      {sec.paragraphs &&
+                        sec.paragraphs.map((p, pIdx) => (
+                          <p
+                            key={pIdx}
+                            className="text-sm leading-relaxed text-slate-700"
+                          >
+                            {p}
+                          </p>
                         ))}
-                      </ul>
-                    )}
-                  </section>
-                ))}
+                      {sec.bullets && sec.bullets.length > 0 && (
+                        <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-slate-700">
+                          {sec.bullets.map((b, bIdx) => (
+                            <li key={bIdx}>{b}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </section>
+                  ))
+                )}
               </div>
             </article>
           </div>
@@ -2972,7 +3470,7 @@ export default function App() {
                   }`}
                 >
                   <UserPlus className="h-4 w-4" />
-                  Employees ({data.employees.length})
+                  Employees ({employeesWithEarnedLeaves.length})
                 </button>
               </div>
               <div className="text-xs text-slate-500">
@@ -3264,11 +3762,15 @@ export default function App() {
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
               <div className="space-y-6 lg:col-span-8">
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
-                  <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                  <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-4">
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="inline-block rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
                           {currentEmployee.empCode} • {currentEmployee.department}
+                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">
+                          <CalendarDays className="h-3 w-3" />
+                          {currentEmployee.monthsEarned} completed accrual mo
                         </span>
                         {currentEmployee.onNoticePeriod && (
                           <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
@@ -3279,43 +3781,141 @@ export default function App() {
                       <h2 className="mt-1 text-xl font-bold text-slate-900">
                         {currentEmployee.name}
                       </h2>
+                      <p className="text-[11px] text-slate-500">
+                        Joined {currentEmployee.joiningDate} • Full-month leave accrual
+                        runs from next month&apos;s 1st (or joining month if on the 1st)
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowAccrualDrawer((v) => !v)}
+                        className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50/70 px-2.5 py-1 text-[11px] font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                      >
+                        <TableProperties className="h-3.5 w-3.5" />
+                        {showAccrualDrawer
+                          ? "Hide Monthly Accrual Table"
+                          : "Monthly Accrual Breakdown"}
+                      </button>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-2">
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-center">
-                        <div className="text-[10px] font-semibold uppercase text-slate-500">
-                          PL (/15)
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 px-3 py-2 text-center">
+                        <div className="text-[10px] font-semibold uppercase text-indigo-700">
+                          Earned PL
                         </div>
                         <div className="text-base font-bold text-slate-900">
                           {currentEmployee.balances.PL}
                         </div>
+                        <div className="text-[10px] text-slate-500">+1.25/mo</div>
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-center">
-                        <div className="text-[10px] font-semibold uppercase text-slate-500">
-                          CL (/10)
+                      <div className="rounded-xl border border-sky-100 bg-sky-50/50 px-3 py-2 text-center">
+                        <div className="text-[10px] font-semibold uppercase text-sky-700">
+                          Earned CL
                         </div>
                         <div className="text-base font-bold text-slate-900">
                           {currentEmployee.balances.CL}
                         </div>
+                        <div className="text-[10px] text-slate-500">+0.83/mo</div>
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-center">
-                        <div className="text-[10px] font-semibold uppercase text-slate-500">
-                          SL (/12)
+                      <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-3 py-2 text-center">
+                        <div className="text-[10px] font-semibold uppercase text-emerald-700">
+                          Earned SL
                         </div>
                         <div className="text-base font-bold text-slate-900">
                           {currentEmployee.balances.SL}
                         </div>
+                        <div className="text-[10px] text-slate-500">+1/mo</div>
                       </div>
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-center">
-                        <div className="text-[10px] font-semibold uppercase text-slate-500">
+                      <div className="rounded-xl border border-violet-100 bg-violet-50/50 px-3 py-2 text-center">
+                        <div className="text-[10px] font-semibold uppercase text-violet-700">
                           Comp Off
                         </div>
                         <div className="text-base font-bold text-slate-900">
                           {currentEmployee.balances.CO}
                         </div>
+                        <div className="text-[10px] text-slate-500">Sunday +1</div>
                       </div>
                     </div>
                   </div>
+
+                  {/* Month-by-Month Accrual Breakdown Drawer / Table */}
+                  {showAccrualDrawer && (
+                    <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+                      <div className="mb-2.5 flex items-center justify-between gap-2">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-900">
+                            Month-by-Month Earned Leave Schedule (Joined{" "}
+                            {currentEmployee.joiningDate})
+                          </h4>
+                          <p className="text-[11px] text-slate-600">
+                            Each completed month adds +1.25 PL, +1.00 SL, and +0.83 CL.
+                            Active earned months so far:{" "}
+                            <strong>{currentEmployee.monthsEarned}</strong>.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowAccrualDrawer(false)}
+                          className="rounded-lg p-1 text-slate-500 hover:bg-white hover:text-slate-800"
+                          aria-label="Close accrual table"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+
+                      {accrualScheduleRows.length === 0 ? (
+                        <p className="text-xs text-slate-600">
+                          No completed accrual months yet. Accrual begins on the 1st of
+                          the month following joining.
+                        </p>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead>
+                              <tr className="border-b border-indigo-200/80 text-[11px] font-semibold text-slate-700">
+                                <th className="py-1.5 pr-3">Month</th>
+                                <th className="py-1.5 px-2">Monthly Add</th>
+                                <th className="py-1.5 px-2">Cumulative PL</th>
+                                <th className="py-1.5 px-2">Cumulative SL</th>
+                                <th className="py-1.5 pl-2">Cumulative CL</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-indigo-100">
+                              {accrualScheduleRows.map((row) => {
+                                const isActiveMonth =
+                                  row.monthNumber <= currentEmployee.monthsEarned;
+                                return (
+                                  <tr
+                                    key={row.label}
+                                    className={
+                                      isActiveMonth
+                                        ? "text-slate-900 font-medium"
+                                        : "text-slate-500"
+                                    }
+                                  >
+                                    <td className="py-1.5 pr-3">
+                                      {row.label}{" "}
+                                      {!isActiveMonth && (
+                                        <span className="ml-1 rounded bg-slate-200/80 px-1.5 py-0.5 text-[10px] text-slate-600">
+                                          Projected
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-1.5 px-2">
+                                      +{row.addedPL} PL, +{row.addedSL} SL, +
+                                      {row.addedCL} CL
+                                    </td>
+                                    <td className="py-1.5 px-2">{row.cumulativePL}</td>
+                                    <td className="py-1.5 px-2">{row.cumulativeSL}</td>
+                                    <td className="py-1.5 pl-2">{row.cumulativeCL}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {currentEmployee.onNoticePeriod && (
                     <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -3362,6 +3962,13 @@ export default function App() {
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                     <h3 className="text-base font-bold text-slate-900">{monthLabel}</h3>
                     <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleJumpToCurrentMonth}
+                        className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                      >
+                        Current Month
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -3411,6 +4018,10 @@ export default function App() {
                     <span className="flex items-center gap-1.5 font-medium text-slate-700">
                       <span className="h-3.5 w-3.5 rounded bg-rose-500 inline-block" />
                       Absent (Red)
+                    </span>
+                    <span className="flex items-center gap-1.5 font-medium text-slate-700">
+                      <span className="h-3.5 w-3.5 rounded bg-slate-200 border border-slate-300 inline-block" />
+                      Sunday Weekly Off (+1 CO if worked)
                     </span>
                     <span className="flex items-center gap-1.5 font-medium text-slate-700">
                       <span className="h-3.5 w-3.5 rounded bg-gray-400 inline-block" />
@@ -3491,14 +4102,14 @@ export default function App() {
                           className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium focus:border-indigo-500 focus:outline-none"
                         >
                           <option value="SL">
-                            Sick Leave (SL) — {currentEmployee.balances.SL} left
+                            Sick Leave (SL) — {currentEmployee.balances.SL} earned left
                           </option>
                           <option value="PL">
-                            Paid / Privilege Leave (PL) — {currentEmployee.balances.PL}{" "}
+                            Privilege Leave (PL) — {currentEmployee.balances.PL} earned
                             left
                           </option>
                           <option value="CL">
-                            Casual Leave (CL) — {currentEmployee.balances.CL} left
+                            Casual Leave (CL) — {currentEmployee.balances.CL} earned left
                           </option>
                           <option value="CO">
                             Compensatory Off (CO) — {currentEmployee.balances.CO} left
@@ -3727,7 +4338,7 @@ export default function App() {
                   }`}
                 >
                   <UserPlus className="h-4 w-4" />
-                  Manage Employees ({data.employees.length})
+                  Manage Employees ({employeesWithEarnedLeaves.length})
                 </button>
               </div>
               <div className="text-xs text-slate-500">
